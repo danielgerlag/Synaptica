@@ -41,3 +41,49 @@ impl RaftNode {
         &self.config
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_config() -> RaftConfig {
+        RaftConfig {
+            node_id: "node-1".to_string(),
+            peers: vec!["node-2".to_string(), "node-3".to_string()],
+            election_timeout: Duration::from_millis(300),
+            heartbeat_interval: Duration::from_millis(100),
+        }
+    }
+
+    #[test]
+    fn test_raft_node_creation() {
+        let node = RaftNode::new(make_config());
+        assert_eq!(node.config().node_id, "node-1");
+    }
+
+    #[test]
+    fn test_initial_term_is_zero() {
+        let node = RaftNode::new(make_config());
+        assert_eq!(node.current_term(), 0);
+    }
+
+    #[test]
+    fn test_is_leader_initially_false() {
+        let node = RaftNode::new(make_config());
+        assert!(!node.is_leader());
+    }
+
+    #[test]
+    fn test_leader_id_initially_none() {
+        let node = RaftNode::new(make_config());
+        assert!(node.leader_id().is_none());
+    }
+
+    #[test]
+    fn test_config_preserved() {
+        let node = RaftNode::new(make_config());
+        let cfg = node.config();
+        assert_eq!(cfg.node_id, "node-1");
+        assert_eq!(cfg.peers, vec!["node-2".to_string(), "node-3".to_string()]);
+    }
+}

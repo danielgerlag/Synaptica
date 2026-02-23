@@ -49,3 +49,91 @@ impl PartitionMap {
         &self.partitions
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_partition(id: &str, start: u8, end: u8) -> Partition {
+        Partition {
+            id: PartitionId(id.to_string()),
+            range: PartitionRange {
+                start: vec![start],
+                end: vec![end],
+            },
+            leader_node: "leader".to_string(),
+            replicas: vec!["r1".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_add_partition() {
+        let mut pm = PartitionMap::new();
+        pm.add_partition(make_partition("p1", 0x00, 0x80));
+        assert_eq!(pm.all_partitions().len(), 1);
+        assert_eq!(pm.all_partitions()[0].id, PartitionId("p1".to_string()));
+    }
+
+    #[test]
+    fn test_find_partition_in_range() {
+        let mut pm = PartitionMap::new();
+        pm.add_partition(make_partition("p1", 0x00, 0x80));
+        let found = pm.find_partition(&[0x40]);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, PartitionId("p1".to_string()));
+    }
+
+    #[test]
+    fn test_find_partition_not_in_range() {
+        let mut pm = PartitionMap::new();
+        pm.add_partition(make_partition("p1", 0x00, 0x80));
+        assert!(pm.find_partition(&[0xFF]).is_none());
+    }
+
+    #[test]
+    fn test_multiple_partitions() {
+        let mut pm = PartitionMap::new();
+        pm.add_partition(make_partition("p1", 0x00, 0x40));
+        pm.add_partition(make_partition("p2", 0x40, 0x80));
+        pm.add_partition(make_partition("p3", 0x80, 0xFF));
+
+        assert_eq!(pm.find_partition(&[0x20]).unwrap().id, PartitionId("p1".to_string()));
+        assert_eq!(pm.find_partition(&[0x60]).unwrap().id, PartitionId("p2".to_string()));
+        assert_eq!(pm.find_partition(&[0xA0]).unwrap().id, PartitionId("p3".to_string()));
+    }
+
+    #[test]
+    fn test_partition_boundary_start() {
+        let mut pm = PartitionMap::new();
+        pm.add_partition(make_partition("p1", 0x00, 0x80));
+        assert!(pm.find_partition(&[0x00]).is_some());
+    }
+
+    #[test]
+    fn test_partition_boundary_end() {
+        let mut pm = PartitionMap::new();
+        pm.add_partition(make_partition("p1", 0x00, 0x80));
+        // End is exclusive
+        assert!(pm.find_partition(&[0x80]).is_none());
+    }
+
+    #[test]
+    fn test_empty_partition_map() {
+        let pm = PartitionMap::new();
+        assert!(pm.find_partition(&[0x42]).is_none());
+    }
+
+    #[test]
+    fn test_partitions_sorted_after_add() {
+        let mut pm = PartitionMap::new();
+        // Add out of order
+        pm.add_partition(make_partition("p3", 0x80, 0xFF));
+        pm.add_partition(make_partition("p1", 0x00, 0x40));
+        pm.add_partition(make_partition("p2", 0x40, 0x80));
+
+        let partitions = pm.all_partitions();
+        assert_eq!(partitions[0].id, PartitionId("p1".to_string()));
+        assert_eq!(partitions[1].id, PartitionId("p2".to_string()));
+        assert_eq!(partitions[2].id, PartitionId("p3".to_string()));
+    }
+}

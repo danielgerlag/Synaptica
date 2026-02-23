@@ -78,6 +78,7 @@ synaptica-core = { path = "crates/synaptica-core" }
 synaptica-gql = { path = "crates/synaptica-gql" }
 synaptica-storage = { path = "crates/synaptica-storage" }
 synaptica-exec = { path = "crates/synaptica-exec" }
+synaptica-cluster = { path = "crates/synaptica-cluster" }
 tempfile = "3"
 
 [profile.release]

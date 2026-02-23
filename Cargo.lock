@@ -2087,6 +2087,7 @@ dependencies = [
 name = "synaptica"
 version = "0.1.0"
 dependencies = [
+ "synaptica-cluster",
  "synaptica-core",
  "synaptica-exec",
  "synaptica-gql",
@@ -2117,6 +2118,7 @@ dependencies = [
  "openraft",
  "prost",
  "serde",
+ "serde_json",
  "synaptica-core",
  "synaptica-storage",
  "synaptica-tx",
