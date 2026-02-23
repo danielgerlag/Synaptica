@@ -1,0 +1,15 @@
+[package]
+name = "synaptica-tx"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+synaptica-core = { workspace = true }
+synaptica-storage = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

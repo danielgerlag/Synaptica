@@ -1,0 +1,6 @@
+/temp
+/target
+*.swp
+*.swo
+*~
+.env

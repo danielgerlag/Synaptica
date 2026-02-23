@@ -1,0 +1,17 @@
+[package]
+name = "synaptica-storage"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+synaptica-core = { workspace = true }
+rocksdb = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,72 @@
+[workspace]
+members = [
+    "crates/synaptica-core",
+    "crates/synaptica-storage",
+    "crates/synaptica-tx",
+    "crates/synaptica-gql",
+    "crates/synaptica-exec",
+    "crates/synaptica-cluster",
+    "crates/synaptica-server",
+    "crates/synaptica-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/synaptica-db/synaptica"
+
+[workspace.dependencies]
+# Internal crates
+synaptica-core = { path = "crates/synaptica-core" }
+synaptica-storage = { path = "crates/synaptica-storage" }
+synaptica-tx = { path = "crates/synaptica-tx" }
+synaptica-gql = { path = "crates/synaptica-gql" }
+synaptica-exec = { path = "crates/synaptica-exec" }
+synaptica-cluster = { path = "crates/synaptica-cluster" }
+synaptica-server = { path = "crates/synaptica-server" }
+
+# Storage
+rocksdb = { version = "0.22", default-features = false, features = ["snappy"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+
+# gRPC
+tonic = "0.12"
+prost = "0.13"
+tonic-build = "0.12"
+
+# Raft consensus
+openraft = { version = "0.9", features = ["serde"] }
+
+# Logging & tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+rustyline = "14"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+bytes = "1"
+dashmap = "6"
+parking_lot = "0.12"
+thiserror = "2"
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+toml = "0.8"
+prometheus = "0.13"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

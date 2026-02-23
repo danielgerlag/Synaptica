@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package synaptica.client.v1;
+
+service SynapticaService {
+  // Execute a GQL query and return results.
+  rpc ExecuteQuery(QueryRequest) returns (QueryResponse);
+
+  // Execute a GQL query and stream results back.
+  rpc ExecuteQueryStream(QueryRequest) returns (stream QueryResponse);
+
+  // Begin an explicit transaction.
+  rpc BeginTransaction(BeginTransactionRequest) returns (BeginTransactionResponse);
+
+  // Commit an explicit transaction.
+  rpc CommitTransaction(CommitTransactionRequest) returns (CommitTransactionResponse);
+
+  // Rollback an explicit transaction.
+  rpc RollbackTransaction(RollbackTransactionRequest) returns (RollbackTransactionResponse);
+
+  // Health check.
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Get cluster status information.
+  rpc ClusterStatus(ClusterStatusRequest) returns (ClusterStatusResponse);
+}
+
+message QueryRequest {
+  string query = 1;
+  string graph_name = 2;
+  map<string, GqlValue> parameters = 3;
+  optional string transaction_id = 4;
+}
+
+message QueryResponse {
+  repeated string columns = 1;
+  repeated Row rows = 2;
+  QueryStats stats = 3;
+  optional string error = 4;
+}
+
+message Row {
+  repeated GqlValue values = 1;
+}
+
+message GqlValue {
+  oneof kind {
+    bool null_value = 1;
+    bool bool_value = 2;
+    int64 integer_value = 3;
+    double float_value = 4;
+    string string_value = 5;
+    bytes bytes_value = 6;
+    GqlList list_value = 7;
+    GqlMap map_value = 8;
+    GqlNode node_value = 9;
+    GqlEdge edge_value = 10;
+  }
+}
+
+message GqlList {
+  repeated GqlValue items = 1;
+}
+
+message GqlMap {
+  map<string, GqlValue> entries = 1;
+}
+
+message GqlNode {
+  string id = 1;
+  repeated string labels = 2;
+  map<string, GqlValue> properties = 3;
+}
+
+message GqlEdge {
+  string id = 1;
+  string label = 2;
+  string source_id = 3;
+  string target_id = 4;
+  map<string, GqlValue> properties = 5;
+}
+
+message QueryStats {
+  int64 nodes_created = 1;
+  int64 nodes_deleted = 2;
+  int64 edges_created = 3;
+  int64 edges_deleted = 4;
+  int64 properties_set = 5;
+  int64 rows_returned = 6;
+  int64 execution_time_ms = 7;
+}
+
+message BeginTransactionRequest {
+  string graph_name = 1;
+}
+
+message BeginTransactionResponse {
+  string transaction_id = 1;
+}
+
+message CommitTransactionRequest {
+  string transaction_id = 1;
+}
+
+message CommitTransactionResponse {
+  bool success = 1;
+}
+
+message RollbackTransactionRequest {
+  string transaction_id = 1;
+}
+
+message RollbackTransactionResponse {
+  bool success = 1;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string version = 2;
+  uint64 uptime_seconds = 3;
+}
+
+message ClusterStatusRequest {}
+
+message ClusterStatusResponse {
+  string node_id = 1;
+  string role = 2;
+  string leader_id = 3;
+  repeated ClusterNode nodes = 4;
+  int32 partition_count = 5;
+}
+
+message ClusterNode {
+  string id = 1;
+  string address = 2;
+  string role = 3;
+  bool is_healthy = 4;
+}

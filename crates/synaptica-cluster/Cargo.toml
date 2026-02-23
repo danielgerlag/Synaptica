@@ -1,0 +1,17 @@
+[package]
+name = "synaptica-cluster"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+synaptica-core = { workspace = true }
+synaptica-storage = { workspace = true }
+synaptica-tx = { workspace = true }
+openraft = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

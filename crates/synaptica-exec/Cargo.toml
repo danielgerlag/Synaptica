@@ -1,0 +1,12 @@
+[package]
+name = "synaptica-exec"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+synaptica-core = { workspace = true }
+synaptica-storage = { workspace = true }
+synaptica-tx = { workspace = true }
+synaptica-gql = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

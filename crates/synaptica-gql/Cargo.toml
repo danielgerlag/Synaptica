@@ -1,0 +1,10 @@
+[package]
+name = "synaptica-gql"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+synaptica-core = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }

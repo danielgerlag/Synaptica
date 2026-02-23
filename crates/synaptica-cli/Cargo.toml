@@ -1,0 +1,17 @@
+[package]
+name = "synaptica-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tonic = { workspace = true }
+prost = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+rustyline = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
