@@ -410,6 +410,7 @@ fn num_cpus() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use synaptica_core::graph::{GraphMeta, Node};
     use synaptica_core::types::Value;
 
@@ -561,5 +562,325 @@ mod tests {
         // No filter
         let all = engine.get_outgoing_edges(&graph_id, &node_a.id, None).unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_bulk_node_insert_1000() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let graph_id = GraphId::new();
+
+        for i in 0..1000 {
+            let mut node = Node::new(graph_id);
+            node.add_label("Bulk");
+            node.set_property("index", Value::Integer(i));
+            engine.put_node(&node).unwrap();
+        }
+
+        let all = engine.scan_nodes(&graph_id).unwrap();
+        assert_eq!(all.len(), 1000);
+    }
+
+    #[test]
+    fn test_node_update_properties() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let graph_id = GraphId::new();
+
+        let mut node = Node::new(graph_id);
+        node.add_label("Person");
+        node.set_property("name", Value::String("Alice".into()));
+        engine.put_node(&node).unwrap();
+
+        // Update properties
+        node.set_property("name", Value::String("Bob".into()));
+        node.set_property("age", Value::Integer(25));
+        engine.put_node(&node).unwrap();
+
+        let fetched = engine.get_node(&graph_id, &node.id).unwrap();
+        assert_eq!(
+            fetched.get_property("name"),
+            Some(&Value::String("Bob".into()))
+        );
+        assert_eq!(fetched.get_property("age"), Some(&Value::Integer(25)));
+    }
+
+    #[test]
+    fn test_node_with_many_properties() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let graph_id = GraphId::new();
+
+        let mut node = Node::new(graph_id);
+        node.set_property("str_val", Value::String("hello".into()));
+        node.set_property("int_val", Value::Integer(42));
+        node.set_property("float_val", Value::Float(3.14));
+        node.set_property("bool_true", Value::Bool(true));
+        node.set_property("bool_false", Value::Bool(false));
+        node.set_property("null_val", Value::Null);
+        node.set_property(
+            "list_val",
+            Value::List(vec![
+                Value::Integer(1),
+                Value::String("two".into()),
+                Value::Bool(false),
+            ]),
+        );
+        let mut map = BTreeMap::new();
+        map.insert("nested_key".to_string(), Value::Integer(99));
+        node.set_property("map_val", Value::Map(map));
+        node.set_property("bytes_val", Value::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+        node.set_property("neg_int", Value::Integer(-1000));
+        node.set_property("large_int", Value::Integer(i64::MAX));
+        node.set_property("small_int", Value::Integer(i64::MIN));
+        node.set_property("zero_float", Value::Float(0.0));
+        node.set_property("neg_float", Value::Float(-273.15));
+        node.set_property("empty_str", Value::String(String::new()));
+        node.set_property("empty_list", Value::List(vec![]));
+        node.set_property("empty_map", Value::Map(BTreeMap::new()));
+        node.set_property("empty_bytes", Value::Bytes(vec![]));
+        node.set_property(
+            "nested_list",
+            Value::List(vec![Value::List(vec![Value::Integer(1)])]),
+        );
+        let mut nested_map = BTreeMap::new();
+        nested_map.insert("inner".to_string(), Value::Map(BTreeMap::new()));
+        node.set_property("nested_map", Value::Map(nested_map));
+
+        engine.put_node(&node).unwrap();
+        let fetched = engine.get_node(&graph_id, &node.id).unwrap();
+        assert_eq!(fetched.properties.len(), 20);
+        assert_eq!(fetched, node);
+    }
+
+    #[test]
+    fn test_unicode_property_values() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let graph_id = GraphId::new();
+
+        let mut node = Node::new(graph_id);
+        node.set_property("japanese", Value::String("日本語".into()));
+        node.set_property("emoji", Value::String("émoji 🎉".into()));
+        node.set_property("spanish", Value::String("Ñoño".into()));
+
+        engine.put_node(&node).unwrap();
+        let fetched = engine.get_node(&graph_id, &node.id).unwrap();
+        assert_eq!(
+            fetched.get_property("japanese"),
+            Some(&Value::String("日本語".into()))
+        );
+        assert_eq!(
+            fetched.get_property("emoji"),
+            Some(&Value::String("émoji 🎉".into()))
+        );
+        assert_eq!(
+            fetched.get_property("spanish"),
+            Some(&Value::String("Ñoño".into()))
+        );
+    }
+
+    #[test]
+    fn test_null_property_value() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let graph_id = GraphId::new();
+
+        let mut node = Node::new(graph_id);
+        node.set_property("empty", Value::Null);
+        engine.put_node(&node).unwrap();
+
+        let fetched = engine.get_node(&graph_id, &node.id).unwrap();
+        assert_eq!(fetched.get_property("empty"), Some(&Value::Null));
+        assert!(fetched.get_property("empty").unwrap().is_null());
+    }
+
+    #[test]
+    fn test_multiple_graphs_isolation() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+
+        let graph1 = GraphId::new();
+        let graph2 = GraphId::new();
+
+        for i in 0..5 {
+            let mut n = Node::new(graph1);
+            n.set_property("idx", Value::Integer(i));
+            engine.put_node(&n).unwrap();
+        }
+        for i in 0..3 {
+            let mut n = Node::new(graph2);
+            n.set_property("idx", Value::Integer(i));
+            engine.put_node(&n).unwrap();
+        }
+
+        let g1_nodes = engine.scan_nodes(&graph1).unwrap();
+        let g2_nodes = engine.scan_nodes(&graph2).unwrap();
+        assert_eq!(g1_nodes.len(), 5);
+        assert_eq!(g2_nodes.len(), 3);
+
+        for n in &g1_nodes {
+            assert_eq!(n.graph_id, graph1);
+        }
+        for n in &g2_nodes {
+            assert_eq!(n.graph_id, graph2);
+        }
+    }
+
+    #[test]
+    fn test_delete_node_with_edges() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let graph_id = GraphId::new();
+
+        let node_a = Node::new(graph_id);
+        let node_b = Node::new(graph_id);
+        engine.put_node(&node_a).unwrap();
+        engine.put_node(&node_b).unwrap();
+
+        let edge = Edge::new(graph_id, node_a.id, node_b.id, "KNOWS");
+        engine.put_edge(&edge).unwrap();
+
+        // Delete source node — edge still exists (no referential integrity at storage layer)
+        engine.delete_node(&graph_id, &node_a.id).unwrap();
+        assert!(engine.get_node(&graph_id, &node_a.id).is_err());
+
+        let fetched_edge = engine.get_edge(&graph_id, &edge.id).unwrap();
+        assert_eq!(fetched_edge, edge);
+    }
+
+    #[test]
+    fn test_scan_empty_graph() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let graph_id = GraphId::new();
+
+        let nodes = engine.scan_nodes(&graph_id).unwrap();
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn test_multiple_labels_on_node() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let graph_id = GraphId::new();
+
+        let mut node = Node::new(graph_id);
+        node.add_label("Person");
+        node.add_label("Employee");
+        node.add_label("Manager");
+        engine.put_node(&node).unwrap();
+
+        let persons = engine
+            .scan_nodes_by_label(&graph_id, &Label::new("Person"))
+            .unwrap();
+        let employees = engine
+            .scan_nodes_by_label(&graph_id, &Label::new("Employee"))
+            .unwrap();
+        let managers = engine
+            .scan_nodes_by_label(&graph_id, &Label::new("Manager"))
+            .unwrap();
+
+        assert_eq!(persons.len(), 1);
+        assert_eq!(employees.len(), 1);
+        assert_eq!(managers.len(), 1);
+        assert_eq!(persons[0].id, node.id);
+        assert_eq!(employees[0].id, node.id);
+        assert_eq!(managers[0].id, node.id);
+    }
+
+    #[test]
+    fn test_edge_with_properties() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let graph_id = GraphId::new();
+
+        let node_a = Node::new(graph_id);
+        let node_b = Node::new(graph_id);
+        engine.put_node(&node_a).unwrap();
+        engine.put_node(&node_b).unwrap();
+
+        let mut edge = Edge::new(graph_id, node_a.id, node_b.id, "WORKS_WITH");
+        edge.set_property("since", Value::Integer(2020));
+        edge.set_property("department", Value::String("Engineering".into()));
+        edge.set_property("active", Value::Bool(true));
+        edge.set_property("score", Value::Float(0.95));
+        edge.set_property(
+            "tags",
+            Value::List(vec![
+                Value::String("team".into()),
+                Value::String("collab".into()),
+            ]),
+        );
+
+        engine.put_edge(&edge).unwrap();
+        let fetched = engine.get_edge(&graph_id, &edge.id).unwrap();
+        assert_eq!(fetched, edge);
+        assert_eq!(fetched.get_property("since"), Some(&Value::Integer(2020)));
+        assert_eq!(fetched.get_property("active"), Some(&Value::Bool(true)));
+        assert_eq!(fetched.get_property("score"), Some(&Value::Float(0.95)));
+    }
+
+    #[test]
+    fn test_adjacency_scan_with_many_edges() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let graph_id = GraphId::new();
+
+        let hub = Node::new(graph_id);
+        engine.put_node(&hub).unwrap();
+
+        for _ in 0..50 {
+            let target = Node::new(graph_id);
+            engine.put_node(&target).unwrap();
+            let edge = Edge::new(graph_id, hub.id, target.id, "CONNECTS");
+            engine.put_edge(&edge).unwrap();
+        }
+
+        let outgoing = engine
+            .get_outgoing_edges(&graph_id, &hub.id, None)
+            .unwrap();
+        assert_eq!(outgoing.len(), 50);
+    }
+
+    #[test]
+    fn test_bidirectional_edges() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let graph_id = GraphId::new();
+
+        let node_a = Node::new(graph_id);
+        let node_b = Node::new(graph_id);
+        engine.put_node(&node_a).unwrap();
+        engine.put_node(&node_b).unwrap();
+
+        let edge_ab = Edge::new(graph_id, node_a.id, node_b.id, "FOLLOWS");
+        let edge_ba = Edge::new(graph_id, node_b.id, node_a.id, "FOLLOWS");
+        engine.put_edge(&edge_ab).unwrap();
+        engine.put_edge(&edge_ba).unwrap();
+
+        let a_out = engine
+            .get_outgoing_edges(&graph_id, &node_a.id, None)
+            .unwrap();
+        assert_eq!(a_out.len(), 1);
+        assert_eq!(a_out[0].id, edge_ab.id);
+
+        let a_in = engine
+            .get_incoming_edges(&graph_id, &node_a.id, None)
+            .unwrap();
+        assert_eq!(a_in.len(), 1);
+        assert_eq!(a_in[0].id, edge_ba.id);
+
+        let b_out = engine
+            .get_outgoing_edges(&graph_id, &node_b.id, None)
+            .unwrap();
+        assert_eq!(b_out.len(), 1);
+        assert_eq!(b_out[0].id, edge_ba.id);
+
+        let b_in = engine
+            .get_incoming_edges(&graph_id, &node_b.id, None)
+            .unwrap();
+        assert_eq!(b_in.len(), 1);
+        assert_eq!(b_in[0].id, edge_ab.id);
     }
 }

@@ -544,3 +544,278 @@ mod e2e_execution {
         assert_eq!(rs.len(), 0);
     }
 }
+
+// ===========================================================================
+// 4. End-to-end INSERT → MATCH tests
+// ===========================================================================
+
+mod e2e_insert_query {
+    use super::*;
+
+    /// Create an empty test graph (storage + graph meta, no pre-populated data).
+    fn empty_graph() -> TestGraph {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let storage =
+            StorageEngine::open(dir.path(), &StorageConfig::default()).expect("open storage");
+        let graph_id = GraphId::new();
+        let meta = GraphMeta {
+            id: graph_id,
+            name: "test".to_string(),
+            graph_type: None,
+        };
+        storage.put_graph_meta(&meta).unwrap();
+        TestGraph {
+            storage,
+            graph_id,
+            _dir: dir,
+        }
+    }
+
+    #[test]
+    fn insert_node_then_query() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'Zara', age: 22})");
+        let rs = execute_query(&tg, "MATCH (n:Person) WHERE n.name = 'Zara' RETURN n.name, n.age");
+        assert_eq!(rs.len(), 1, "expected 1 row, got {}", rs.len());
+        assert_eq!(column_values(&rs, "n.name"), vec![Value::String("Zara".into())]);
+        assert_eq!(column_values(&rs, "n.age"), vec![Value::Integer(22)]);
+    }
+
+    #[test]
+    fn insert_multiple_nodes_then_count() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'A'})");
+        execute_query(&tg, "INSERT (:Company {name: 'B'})");
+        execute_query(&tg, "INSERT (:City {name: 'C'})");
+
+        let persons = execute_query(&tg, "MATCH (n:Person) RETURN n.name");
+        assert_eq!(persons.len(), 1);
+        let companies = execute_query(&tg, "MATCH (n:Company) RETURN n.name");
+        assert_eq!(companies.len(), 1);
+        let cities = execute_query(&tg, "MATCH (n:City) RETURN n.name");
+        assert_eq!(cities.len(), 1);
+        let all = execute_query(&tg, "MATCH (n) RETURN n.name");
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn insert_node_with_single_label() {
+        // Multi-label INSERT (e.g. `:Person:Employee`) is not currently
+        // supported by the planner — it only picks up the first label from
+        // each path element.  We verify single-label INSERT works correctly.
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Employee {name: 'Test'})");
+        let rs = execute_query(&tg, "MATCH (n:Employee) RETURN n.name");
+        assert_eq!(rs.len(), 1);
+        assert_eq!(column_values(&rs, "n.name"), vec![Value::String("Test".into())]);
+    }
+
+    #[test]
+    fn insert_preserves_property_types() {
+        let tg = empty_graph();
+        execute_query(
+            &tg,
+            "INSERT (:Thing {s: 'hello', i: 42, f: 3.14, b: true})",
+        );
+        let rs = execute_query(&tg, "MATCH (n:Thing) RETURN n.s, n.i, n.f, n.b");
+        assert_eq!(rs.len(), 1);
+        assert_eq!(column_values(&rs, "n.s"), vec![Value::String("hello".into())]);
+        assert_eq!(column_values(&rs, "n.i"), vec![Value::Integer(42)]);
+        assert_eq!(column_values(&rs, "n.f"), vec![Value::Float(3.14)]);
+        assert_eq!(column_values(&rs, "n.b"), vec![Value::Bool(true)]);
+    }
+
+    #[test]
+    fn insert_then_filter() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'X', age: 10})");
+        execute_query(&tg, "INSERT (:Person {name: 'Y', age: 20})");
+        execute_query(&tg, "INSERT (:Person {name: 'Z', age: 30})");
+
+        let rs = execute_query(&tg, "MATCH (n:Person) WHERE n.age > 15 RETURN n.name");
+        let names = column_values(&rs, "n.name");
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&Value::String("Y".into())));
+        assert!(names.contains(&Value::String("Z".into())));
+    }
+}
+
+// ===========================================================================
+// 5. Complex query pattern tests (against pre-populated TestGraph)
+// ===========================================================================
+
+mod e2e_complex_queries {
+    use super::*;
+
+    #[test]
+    fn filter_with_and() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.age > 25 AND n.age < 40 RETURN n.name",
+        );
+        let names = column_values(&rs, "n.name");
+        // Bob(35), Carol(28), Alice(30)
+        assert_eq!(names.len(), 3, "expected 3 rows, got {:?}", names);
+        assert!(names.contains(&Value::String("Bob".into())));
+        assert!(names.contains(&Value::String("Carol".into())));
+        assert!(names.contains(&Value::String("Alice".into())));
+    }
+
+    #[test]
+    fn filter_with_or() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.name = 'Alice' OR n.name = 'Bob' RETURN n.name",
+        );
+        let names = column_values(&rs, "n.name");
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&Value::String("Alice".into())));
+        assert!(names.contains(&Value::String("Bob".into())));
+    }
+
+    #[test]
+    fn filter_with_not_equal() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.name <> 'Alice' RETURN n.name",
+        );
+        let names = column_values(&rs, "n.name");
+        assert_eq!(names.len(), 4, "expected 4 rows, got {:?}", names);
+        assert!(!names.contains(&Value::String("Alice".into())));
+    }
+
+    #[test]
+    fn filter_with_gte_lte() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.age >= 30 AND n.age <= 35 RETURN n.name",
+        );
+        let names = column_values(&rs, "n.name");
+        assert_eq!(names.len(), 2, "expected 2 rows, got {:?}", names);
+        assert!(names.contains(&Value::String("Alice".into())));
+        assert!(names.contains(&Value::String("Bob".into())));
+    }
+
+    #[test]
+    fn project_name_and_age() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.name, n.age",
+        );
+        assert_eq!(rs.len(), 1);
+        assert_eq!(column_values(&rs, "n.name"), vec![Value::String("Alice".into())]);
+        assert_eq!(column_values(&rs, "n.age"), vec![Value::Integer(30)]);
+    }
+
+    #[test]
+    fn multiple_properties_filter() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.name, n.age",
+        );
+        assert_eq!(rs.len(), 1);
+        assert!(rs.columns.contains(&"n.name".to_string()));
+        assert!(rs.columns.contains(&"n.age".to_string()));
+        assert_eq!(column_values(&rs, "n.name"), vec![Value::String("Alice".into())]);
+        assert_eq!(column_values(&rs, "n.age"), vec![Value::Integer(30)]);
+    }
+
+    #[test]
+    fn query_empty_result() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.age > 100 RETURN n.name",
+        );
+        assert_eq!(rs.len(), 0);
+    }
+
+    #[test]
+    fn query_all_nodes_count_check() {
+        let tg = TestGraph::new();
+        let rs = execute_query(&tg, "MATCH (n) RETURN n.name");
+        // 5 Person + 3 Company = 8 nodes
+        assert_eq!(rs.len(), 8, "expected 8 nodes, got {}", rs.len());
+    }
+}
+
+// ===========================================================================
+// 6. Sorting and pagination tests
+// ===========================================================================
+
+mod e2e_sorting_pagination {
+    use super::*;
+
+    #[test]
+    fn order_by_integer_asc() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) RETURN n.name, n.age ORDER BY n.age",
+        );
+        let ages = column_values(&rs, "n.age");
+        assert_eq!(
+            ages,
+            vec![
+                Value::Integer(25), // Eve
+                Value::Integer(28), // Carol
+                Value::Integer(30), // Alice
+                Value::Integer(35), // Bob
+                Value::Integer(42), // Dave
+            ]
+        );
+    }
+
+    #[test]
+    fn order_by_string_asc() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) RETURN n.name ORDER BY n.name",
+        );
+        let names = column_values(&rs, "n.name");
+        assert_eq!(
+            names,
+            vec![
+                Value::String("Alice".into()),
+                Value::String("Bob".into()),
+                Value::String("Carol".into()),
+                Value::String("Dave".into()),
+                Value::String("Eve".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn limit_zero() {
+        let tg = TestGraph::new();
+        let rs = execute_query(&tg, "MATCH (n:Person) RETURN n.name LIMIT 0");
+        assert_eq!(rs.len(), 0);
+    }
+
+    #[test]
+    fn offset_only() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) RETURN n.name LIMIT 100 OFFSET 3",
+        );
+        assert_eq!(rs.len(), 2, "expected 2 rows (5 - 3 offset), got {}", rs.len());
+    }
+
+    #[test]
+    fn offset_beyond_results() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) RETURN n.name LIMIT 10 OFFSET 100",
+        );
+        assert_eq!(rs.len(), 0);
+    }
+}

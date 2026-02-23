@@ -186,6 +186,15 @@ impl QueryPlanner {
                     };
                 }
 
+                if let Some(ref ob) = r.order_by {
+                    let order_exprs: Vec<Expression> =
+                        ob.items.iter().map(|i| i.expression.clone()).collect();
+                    plan = LogicalPlan::Sort {
+                        input: Box::new(plan),
+                        order_by: order_exprs,
+                    };
+                }
+
                 if let Some(ref lo) = r.limit_offset {
                     let count = lo.limit.as_ref().and_then(|e| match e {
                         Expression::Literal(crate::ast::Literal::Integer(n)) => Some(*n as u64),
@@ -203,6 +212,24 @@ impl QueryPlanner {
                 }
 
                 Ok(plan)
+            }
+            GqlStatement::Insert(ins) => {
+                let node = ins
+                    .patterns
+                    .iter()
+                    .flat_map(|p| p.elements.iter())
+                    .filter_map(|e| match e {
+                        crate::ast::PatternElement::Node(n) => Some(n),
+                        _ => None,
+                    })
+                    .next()
+                    .ok_or(PlanError::Internal(
+                        "INSERT requires at least one node pattern".into(),
+                    ))?;
+                Ok(LogicalPlan::CreateNode {
+                    labels: node.labels.clone(),
+                    properties: node.properties.clone(),
+                })
             }
             _ => Err(PlanError::UnsupportedStatement),
         }

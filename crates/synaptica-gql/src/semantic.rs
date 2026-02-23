@@ -173,6 +173,7 @@ impl Default for SemanticAnalyzer {
 mod tests {
     use super::*;
     use crate::ast::*;
+    use crate::parser::parse;
 
     #[test]
     fn undefined_variable_in_return() {
@@ -193,5 +194,80 @@ mod tests {
         let mut analyzer = SemanticAnalyzer::new();
         let err = analyzer.analyze(&program).unwrap_err();
         assert_eq!(err, SemanticError::UndefinedVariable("x".into()));
+    }
+
+    /// Helper: parse GQL source then run semantic analysis.
+    fn analyze_gql(src: &str) -> Result<(), SemanticError> {
+        let program = parse(src).expect("parse should succeed");
+        let mut analyzer = SemanticAnalyzer::new();
+        analyzer.analyze(&program)
+    }
+
+    #[test]
+    fn test_valid_simple_query() {
+        assert!(analyze_gql("MATCH (n:Person) RETURN n.name").is_ok());
+    }
+
+    #[test]
+    fn test_valid_edge_pattern() {
+        assert!(analyze_gql("MATCH (a)-[r:KNOWS]->(b) RETURN a.name, b.name").is_ok());
+    }
+
+    #[test]
+    fn test_undefined_var_in_where() {
+        let result = analyze_gql("MATCH (n:Person) WHERE x.age > 30 RETURN n");
+        assert_eq!(
+            result.unwrap_err(),
+            SemanticError::UndefinedVariable("x".into())
+        );
+    }
+
+    #[test]
+    fn test_undefined_var_in_return_parsed() {
+        let result = analyze_gql("MATCH (n:Person) RETURN m.name");
+        assert_eq!(
+            result.unwrap_err(),
+            SemanticError::UndefinedVariable("m".into())
+        );
+    }
+
+    #[test]
+    fn test_multiple_variables_valid() {
+        assert!(
+            analyze_gql("MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, r, b.name")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_variable_from_edge_pattern() {
+        assert!(analyze_gql("MATCH (n)-[r]->(m) RETURN r").is_ok());
+    }
+
+    #[test]
+    fn test_no_match_with_return() {
+        // RETURN 42 — literal only, no variable references, should pass.
+        assert!(analyze_gql("RETURN 42").is_ok());
+    }
+
+    #[test]
+    fn test_match_without_variable() {
+        // Unnamed node pattern is valid; returning a literal needs no scope.
+        assert!(analyze_gql("MATCH (:Person) RETURN 1").is_ok());
+    }
+
+    #[test]
+    fn test_insert_no_undefined_vars() {
+        // INSERT is not checked by the semantic pass (handled as `_ => Ok(())`).
+        assert!(analyze_gql("INSERT (:Person {name: 'Alice'})").is_ok());
+    }
+
+    #[test]
+    fn test_duplicate_variable_detection() {
+        let result = analyze_gql("MATCH (n:Person), (n:Company) RETURN n");
+        assert_eq!(
+            result.unwrap_err(),
+            SemanticError::DuplicateVariable("n".into())
+        );
     }
 }

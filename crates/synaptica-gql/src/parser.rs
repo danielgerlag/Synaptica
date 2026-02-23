@@ -1508,4 +1508,664 @@ mod tests {
             _ => panic!("expected DELETE"),
         }
     }
+
+    // ===================================================================
+    // Pattern tests
+    // ===================================================================
+
+    #[test]
+    fn test_undirected_edge() {
+        let program = parse("MATCH (a)-[r:FRIEND]-(b) RETURN a, b").unwrap();
+        assert_eq!(program.statements.len(), 2);
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let elems = &m.pattern.paths[0].elements;
+                assert_eq!(elems.len(), 3);
+                match &elems[1] {
+                    PatternElement::Edge(e) => {
+                        assert_eq!(e.variable.as_deref(), Some("r"));
+                        assert_eq!(e.labels, vec!["FRIEND"]);
+                        assert_eq!(e.direction, Direction::Undirected);
+                    }
+                    _ => panic!("expected edge"),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_left_arrow_edge() {
+        let program = parse("MATCH (a)<-[r:KNOWS]-(b) RETURN a").unwrap();
+        assert_eq!(program.statements.len(), 2);
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let elems = &m.pattern.paths[0].elements;
+                assert_eq!(elems.len(), 3);
+                match &elems[1] {
+                    PatternElement::Edge(e) => {
+                        assert_eq!(e.variable.as_deref(), Some("r"));
+                        assert_eq!(e.labels, vec!["KNOWS"]);
+                        assert_eq!(e.direction, Direction::Right);
+                    }
+                    _ => panic!("expected edge"),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_node_no_variable() {
+        let program =
+            parse("MATCH (:Person {name: 'X'}) RETURN 1").unwrap();
+        assert_eq!(program.statements.len(), 2);
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let node = match &m.pattern.paths[0].elements[0] {
+                    PatternElement::Node(n) => n,
+                    _ => panic!("expected node"),
+                };
+                assert!(node.variable.is_none());
+                assert_eq!(node.labels, vec!["Person"]);
+                assert_eq!(node.properties.len(), 1);
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_node_multiple_labels() {
+        let program = parse("MATCH (n:Person:Employee) RETURN n").unwrap();
+        assert_eq!(program.statements.len(), 2);
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let node = match &m.pattern.paths[0].elements[0] {
+                    PatternElement::Node(n) => n,
+                    _ => panic!("expected node"),
+                };
+                assert_eq!(node.variable.as_deref(), Some("n"));
+                assert_eq!(node.labels, vec!["Person", "Employee"]);
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_node_with_properties() {
+        let program =
+            parse("MATCH (n:Person {name: 'Alice', age: 30}) RETURN n").unwrap();
+        assert_eq!(program.statements.len(), 2);
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let node = match &m.pattern.paths[0].elements[0] {
+                    PatternElement::Node(n) => n,
+                    _ => panic!("expected node"),
+                };
+                assert_eq!(node.variable.as_deref(), Some("n"));
+                assert_eq!(node.labels, vec!["Person"]);
+                assert_eq!(node.properties.len(), 2);
+                assert_eq!(node.properties[0].0, "name");
+                assert_eq!(
+                    node.properties[0].1,
+                    Expression::Literal(Literal::String("Alice".into()))
+                );
+                assert_eq!(node.properties[1].0, "age");
+                assert_eq!(
+                    node.properties[1].1,
+                    Expression::Literal(Literal::Integer(30))
+                );
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_chain_of_edges() {
+        let program =
+            parse("MATCH (a)-[r1:KNOWS]->(b)-[r2:KNOWS]->(c) RETURN a, b, c")
+                .unwrap();
+        assert_eq!(program.statements.len(), 2);
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let elems = &m.pattern.paths[0].elements;
+                // 3 nodes + 2 edges = 5 elements
+                assert_eq!(elems.len(), 5);
+                assert!(matches!(&elems[0], PatternElement::Node(_)));
+                assert!(matches!(&elems[1], PatternElement::Edge(_)));
+                assert!(matches!(&elems[2], PatternElement::Node(_)));
+                assert!(matches!(&elems[3], PatternElement::Edge(_)));
+                assert!(matches!(&elems[4], PatternElement::Node(_)));
+
+                match &elems[1] {
+                    PatternElement::Edge(e) => {
+                        assert_eq!(e.variable.as_deref(), Some("r1"));
+                        assert_eq!(e.direction, Direction::Left);
+                    }
+                    _ => unreachable!(),
+                }
+                match &elems[3] {
+                    PatternElement::Edge(e) => {
+                        assert_eq!(e.variable.as_deref(), Some("r2"));
+                        assert_eq!(e.direction, Direction::Left);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    // ===================================================================
+    // Expression tests
+    // ===================================================================
+
+    #[test]
+    fn test_nested_arithmetic() {
+        let program =
+            parse("MATCH (n) WHERE n.age + 5 > 30 RETURN n").unwrap();
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let cond = m.where_clause.as_ref().unwrap().condition.as_ref();
+                match cond {
+                    Expression::BinaryOp { op, left, .. } => {
+                        assert_eq!(*op, BinaryOp::Gt);
+                        // left should be n.age + 5
+                        match left.as_ref() {
+                            Expression::BinaryOp { op, .. } => {
+                                assert_eq!(*op, BinaryOp::Add);
+                            }
+                            _ => panic!("expected Add"),
+                        }
+                    }
+                    _ => panic!("expected BinaryOp"),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_string_comparison() {
+        let program =
+            parse("MATCH (n) WHERE n.name = 'Alice' RETURN n").unwrap();
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let cond = m.where_clause.as_ref().unwrap().condition.as_ref();
+                match cond {
+                    Expression::BinaryOp { op, right, .. } => {
+                        assert_eq!(*op, BinaryOp::Eq);
+                        assert_eq!(
+                            **right,
+                            Expression::Literal(Literal::String("Alice".into()))
+                        );
+                    }
+                    _ => panic!("expected BinaryOp"),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_boolean_and_or_not() {
+        let program = parse(
+            "MATCH (n) WHERE NOT (n.age < 25 AND n.active = TRUE) RETURN n",
+        )
+        .unwrap();
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let cond = m.where_clause.as_ref().unwrap().condition.as_ref();
+                match cond {
+                    Expression::UnaryOp { op, operand } => {
+                        assert_eq!(*op, UnaryOp::Not);
+                        // operand is the parenthesized AND expression
+                        match operand.as_ref() {
+                            Expression::BinaryOp { op, .. } => {
+                                assert_eq!(*op, BinaryOp::And);
+                            }
+                            _ => panic!("expected AND inside NOT"),
+                        }
+                    }
+                    _ => panic!("expected UnaryOp NOT"),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_is_null() {
+        let program =
+            parse("MATCH (n) WHERE n.email IS NULL RETURN n").unwrap();
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let cond = m.where_clause.as_ref().unwrap().condition.as_ref();
+                match cond {
+                    Expression::IsNull(inner) => {
+                        assert_eq!(
+                            **inner,
+                            Expression::PropertyAccess {
+                                object: Box::new(Expression::Identifier("n".into())),
+                                property: "email".into(),
+                            }
+                        );
+                    }
+                    _ => panic!("expected IsNull"),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_case_expression() {
+        let program = parse(
+            "MATCH (n) RETURN CASE WHEN n.age > 30 THEN 'old' ELSE 'young' END",
+        )
+        .unwrap();
+        match &program.statements[1] {
+            GqlStatement::Return(r) => {
+                assert_eq!(r.items.len(), 1);
+                match &r.items[0].expression {
+                    Expression::Case {
+                        operand,
+                        when_clauses,
+                        else_clause,
+                    } => {
+                        assert!(operand.is_none());
+                        assert_eq!(when_clauses.len(), 1);
+                        assert_eq!(
+                            else_clause.as_deref(),
+                            Some(&Expression::Literal(Literal::String("young".into())))
+                        );
+                    }
+                    _ => panic!("expected Case expression"),
+                }
+            }
+            _ => panic!("expected RETURN"),
+        }
+    }
+
+    #[test]
+    fn test_function_call() {
+        let program = parse("MATCH (n) RETURN toString(n.age)").unwrap();
+        match &program.statements[1] {
+            GqlStatement::Return(r) => {
+                assert_eq!(r.items.len(), 1);
+                match &r.items[0].expression {
+                    Expression::FunctionCall { name, args } => {
+                        assert_eq!(name, "toString");
+                        assert_eq!(args.len(), 1);
+                        assert_eq!(
+                            args[0],
+                            Expression::PropertyAccess {
+                                object: Box::new(Expression::Identifier("n".into())),
+                                property: "age".into(),
+                            }
+                        );
+                    }
+                    _ => panic!("expected FunctionCall"),
+                }
+            }
+            _ => panic!("expected RETURN"),
+        }
+    }
+
+    #[test]
+    fn test_nested_property_access() {
+        let program = parse("MATCH (n) RETURN n.name").unwrap();
+        match &program.statements[1] {
+            GqlStatement::Return(r) => {
+                assert_eq!(r.items.len(), 1);
+                assert_eq!(
+                    r.items[0].expression,
+                    Expression::PropertyAccess {
+                        object: Box::new(Expression::Identifier("n".into())),
+                        property: "name".into(),
+                    }
+                );
+            }
+            _ => panic!("expected RETURN"),
+        }
+    }
+
+    #[test]
+    fn test_negative_number() {
+        let program =
+            parse("MATCH (n) WHERE n.balance > -100 RETURN n").unwrap();
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let cond = m.where_clause.as_ref().unwrap().condition.as_ref();
+                match cond {
+                    Expression::BinaryOp { op, right, .. } => {
+                        assert_eq!(*op, BinaryOp::Gt);
+                        assert_eq!(
+                            **right,
+                            Expression::UnaryOp {
+                                op: UnaryOp::Neg,
+                                operand: Box::new(Expression::Literal(
+                                    Literal::Integer(100)
+                                )),
+                            }
+                        );
+                    }
+                    _ => panic!("expected BinaryOp"),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_float_literal_in_where() {
+        let program =
+            parse("MATCH (n) WHERE n.score > 3.14 RETURN n").unwrap();
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let cond = m.where_clause.as_ref().unwrap().condition.as_ref();
+                match cond {
+                    Expression::BinaryOp { op, right, .. } => {
+                        assert_eq!(*op, BinaryOp::Gt);
+                        assert_eq!(
+                            **right,
+                            Expression::Literal(Literal::Float(3.14))
+                        );
+                    }
+                    _ => panic!("expected BinaryOp"),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_parenthesized_expression() {
+        let program = parse(
+            "MATCH (n) WHERE (n.age > 20 AND n.age < 40) OR n.name = 'admin' RETURN n",
+        )
+        .unwrap();
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let cond = m.where_clause.as_ref().unwrap().condition.as_ref();
+                // Top-level should be OR
+                match cond {
+                    Expression::BinaryOp { op, left, right } => {
+                        assert_eq!(*op, BinaryOp::Or);
+                        // left is the parenthesized AND
+                        match left.as_ref() {
+                            Expression::BinaryOp { op, .. } => {
+                                assert_eq!(*op, BinaryOp::And);
+                            }
+                            _ => panic!("expected AND on left"),
+                        }
+                        // right is n.name = 'admin'
+                        match right.as_ref() {
+                            Expression::BinaryOp { op, .. } => {
+                                assert_eq!(*op, BinaryOp::Eq);
+                            }
+                            _ => panic!("expected Eq on right"),
+                        }
+                    }
+                    _ => panic!("expected OR"),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    // ===================================================================
+    // Statement tests
+    // ===================================================================
+
+    #[test]
+    fn test_delete_statement() {
+        let program =
+            parse("MATCH (n:Person {name: 'Alice'}) DELETE n").unwrap();
+        assert_eq!(program.statements.len(), 2);
+        match &program.statements[1] {
+            GqlStatement::Delete(d) => {
+                assert!(!d.detach);
+                assert_eq!(d.targets.len(), 1);
+                assert_eq!(d.targets[0], Expression::Identifier("n".into()));
+            }
+            _ => panic!("expected DELETE"),
+        }
+    }
+
+    #[test]
+    fn test_set_statement() {
+        let program =
+            parse("MATCH (n:Person {name: 'Alice'}) SET n.age = 31").unwrap();
+        assert_eq!(program.statements.len(), 2);
+        match &program.statements[1] {
+            GqlStatement::Set(s) => {
+                assert_eq!(s.items.len(), 1);
+                match &s.items[0] {
+                    SetItem::Property {
+                        target,
+                        property,
+                        value,
+                    } => {
+                        assert_eq!(*target, Expression::Identifier("n".into()));
+                        assert_eq!(property, "age");
+                        assert_eq!(
+                            *value,
+                            Expression::Literal(Literal::Integer(31))
+                        );
+                    }
+                    _ => panic!("expected SetItem::Property"),
+                }
+            }
+            _ => panic!("expected SET"),
+        }
+    }
+
+    #[test]
+    fn test_remove_statement() {
+        let program =
+            parse("MATCH (n:Person) REMOVE n.email").unwrap();
+        assert_eq!(program.statements.len(), 2);
+        match &program.statements[1] {
+            GqlStatement::Remove(r) => {
+                assert_eq!(r.items.len(), 1);
+                match &r.items[0] {
+                    RemoveItem::Property { target, property } => {
+                        assert_eq!(*target, Expression::Identifier("n".into()));
+                        assert_eq!(property, "email");
+                    }
+                    _ => panic!("expected RemoveItem::Property"),
+                }
+            }
+            _ => panic!("expected REMOVE"),
+        }
+    }
+
+    #[test]
+    fn test_return_distinct() {
+        let program =
+            parse("MATCH (n:Person) RETURN DISTINCT n.name").unwrap();
+        assert_eq!(program.statements.len(), 2);
+        match &program.statements[1] {
+            GqlStatement::Return(r) => {
+                assert!(r.distinct);
+                assert_eq!(r.items.len(), 1);
+                assert_eq!(
+                    r.items[0].expression,
+                    Expression::PropertyAccess {
+                        object: Box::new(Expression::Identifier("n".into())),
+                        property: "name".into(),
+                    }
+                );
+            }
+            _ => panic!("expected RETURN"),
+        }
+    }
+
+    #[test]
+    fn test_return_with_alias() {
+        let program = parse(
+            "MATCH (n:Person) RETURN n.name AS personName, n.age AS years",
+        )
+        .unwrap();
+        assert_eq!(program.statements.len(), 2);
+        match &program.statements[1] {
+            GqlStatement::Return(r) => {
+                assert_eq!(r.items.len(), 2);
+                assert_eq!(r.items[0].alias.as_deref(), Some("personName"));
+                assert_eq!(r.items[1].alias.as_deref(), Some("years"));
+            }
+            _ => panic!("expected RETURN"),
+        }
+    }
+
+    #[test]
+    fn test_order_by_desc() {
+        let program = parse(
+            "MATCH (n) RETURN n.name ORDER BY n.age DESC",
+        )
+        .unwrap();
+        match &program.statements[1] {
+            GqlStatement::Return(r) => {
+                let ob = r.order_by.as_ref().expect("expected ORDER BY");
+                assert_eq!(ob.items.len(), 1);
+                assert_eq!(ob.items[0].direction, SortDirection::Desc);
+            }
+            _ => panic!("expected RETURN"),
+        }
+    }
+
+    #[test]
+    fn test_order_by_multiple() {
+        let program = parse(
+            "MATCH (n) RETURN n.name, n.age ORDER BY n.age ASC, n.name DESC",
+        )
+        .unwrap();
+        match &program.statements[1] {
+            GqlStatement::Return(r) => {
+                let ob = r.order_by.as_ref().expect("expected ORDER BY");
+                assert_eq!(ob.items.len(), 2);
+                assert_eq!(ob.items[0].direction, SortDirection::Asc);
+                assert_eq!(ob.items[1].direction, SortDirection::Desc);
+            }
+            _ => panic!("expected RETURN"),
+        }
+    }
+
+    #[test]
+    fn test_group_by() {
+        let program = parse(
+            "MATCH (n:Person) RETURN n.age, COUNT(n) GROUP BY n.age",
+        )
+        .unwrap();
+        match &program.statements[1] {
+            GqlStatement::Return(r) => {
+                assert_eq!(r.items.len(), 2);
+                let gb = r.group_by.as_ref().expect("expected GROUP BY");
+                assert_eq!(gb.expressions.len(), 1);
+                assert_eq!(
+                    gb.expressions[0],
+                    Expression::PropertyAccess {
+                        object: Box::new(Expression::Identifier("n".into())),
+                        property: "age".into(),
+                    }
+                );
+            }
+            _ => panic!("expected RETURN"),
+        }
+    }
+
+    #[test]
+    fn test_create_graph_if_not_exists() {
+        let program =
+            parse("CREATE GRAPH IF NOT EXISTS myGraph").unwrap();
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            GqlStatement::CreateGraph(cg) => {
+                assert_eq!(cg.name, "myGraph");
+                assert!(cg.if_not_exists);
+                assert!(cg.graph_type.is_none());
+            }
+            _ => panic!("expected CREATE GRAPH"),
+        }
+    }
+
+    #[test]
+    fn test_drop_graph_if_exists() {
+        let program = parse("DROP GRAPH IF EXISTS myGraph").unwrap();
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            GqlStatement::DropGraph(dg) => {
+                assert_eq!(dg.name, "myGraph");
+                assert!(dg.if_exists);
+            }
+            _ => panic!("expected DROP GRAPH"),
+        }
+    }
+
+    // ===================================================================
+    // Edge case tests
+    // ===================================================================
+
+    #[test]
+    fn test_empty_input() {
+        let program = parse("").unwrap();
+        assert!(program.statements.is_empty());
+    }
+
+    #[test]
+    fn test_semicolon_separated() {
+        let program = parse(
+            "MATCH (n) RETURN n; MATCH (m) RETURN m",
+        )
+        .unwrap();
+        // Each MATCH + RETURN pair is 2 statements, with semicolon separator
+        assert_eq!(program.statements.len(), 4);
+        assert!(matches!(&program.statements[0], GqlStatement::Match(_)));
+        assert!(matches!(&program.statements[1], GqlStatement::Return(_)));
+        assert!(matches!(&program.statements[2], GqlStatement::Match(_)));
+        assert!(matches!(&program.statements[3], GqlStatement::Return(_)));
+    }
+
+    #[test]
+    fn test_unicode_string_literal() {
+        let program =
+            parse("MATCH (n) WHERE n.name = '日本語' RETURN n").unwrap();
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let cond = m.where_clause.as_ref().unwrap().condition.as_ref();
+                match cond {
+                    Expression::BinaryOp { right, .. } => {
+                        assert_eq!(
+                            **right,
+                            Expression::Literal(Literal::String("日本語".into()))
+                        );
+                    }
+                    _ => panic!("expected BinaryOp"),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_escaped_quotes_in_string() {
+        let program =
+            parse("MATCH (n) WHERE n.name = 'O''Brien' RETURN n").unwrap();
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                let cond = m.where_clause.as_ref().unwrap().condition.as_ref();
+                match cond {
+                    Expression::BinaryOp { right, .. } => {
+                        assert_eq!(
+                            **right,
+                            Expression::Literal(Literal::String("O'Brien".into()))
+                        );
+                    }
+                    _ => panic!("expected BinaryOp"),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
 }

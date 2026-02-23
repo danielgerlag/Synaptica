@@ -388,3 +388,527 @@ fn eval_function(name: &str, args: &[Value]) -> Result<Value, ExecError> {
         _ => Err(ExecError::NotImplemented(format!("function: {}", name))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    fn int_lit(v: i64) -> Expression {
+        Expression::Literal(Literal::Integer(v))
+    }
+    fn float_lit(v: f64) -> Expression {
+        Expression::Literal(Literal::Float(v))
+    }
+    fn str_lit(s: &str) -> Expression {
+        Expression::Literal(Literal::String(s.to_string()))
+    }
+    fn bool_lit(b: bool) -> Expression {
+        Expression::Literal(Literal::Bool(b))
+    }
+    fn null_lit() -> Expression {
+        Expression::Literal(Literal::Null)
+    }
+    fn binop(left: Expression, op: BinaryOp, right: Expression) -> Expression {
+        Expression::BinaryOp {
+            left: Box::new(left),
+            op,
+            right: Box::new(right),
+        }
+    }
+    fn unaryop(op: UnaryOp, operand: Expression) -> Expression {
+        Expression::UnaryOp {
+            op,
+            operand: Box::new(operand),
+        }
+    }
+    fn empty_record() -> Record {
+        Record::new(vec![], vec![])
+    }
+
+    // -----------------------------------------------------------------------
+    // Literal evaluation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_literal_integer() {
+        let result = evaluate(&int_lit(42), &empty_record()).unwrap();
+        assert_eq!(result, Value::Integer(42));
+    }
+
+    #[test]
+    fn test_literal_float() {
+        let result = evaluate(&float_lit(3.14), &empty_record()).unwrap();
+        assert_eq!(result, Value::Float(3.14));
+    }
+
+    #[test]
+    fn test_literal_string() {
+        let result = evaluate(&str_lit("hello"), &empty_record()).unwrap();
+        assert_eq!(result, Value::String("hello".to_string()));
+    }
+
+    #[test]
+    fn test_literal_bool_true() {
+        let result = evaluate(&bool_lit(true), &empty_record()).unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_literal_bool_false() {
+        let result = evaluate(&bool_lit(false), &empty_record()).unwrap();
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_literal_null() {
+        let result = evaluate(&null_lit(), &empty_record()).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_literal_list() {
+        let expr = Expression::Literal(Literal::List(vec![
+            Literal::Integer(1),
+            Literal::Integer(2),
+        ]));
+        let result = evaluate(&expr, &empty_record()).unwrap();
+        assert_eq!(result, Value::List(vec![Value::Integer(1), Value::Integer(2)]));
+    }
+
+    #[test]
+    fn test_literal_map() {
+        let expr = Expression::Literal(Literal::Map(vec![
+            ("a".to_string(), Literal::Integer(1)),
+        ]));
+        let result = evaluate(&expr, &empty_record()).unwrap();
+        let mut expected = BTreeMap::new();
+        expected.insert("a".to_string(), Value::Integer(1));
+        assert_eq!(result, Value::Map(expected));
+    }
+
+    // -----------------------------------------------------------------------
+    // Arithmetic operations
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_add_integers() {
+        let expr = binop(int_lit(3), BinaryOp::Add, int_lit(4));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Integer(7));
+    }
+
+    #[test]
+    fn test_add_floats() {
+        let expr = binop(float_lit(1.5), BinaryOp::Add, float_lit(2.5));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Float(4.0));
+    }
+
+    #[test]
+    fn test_add_mixed_int_float() {
+        let expr = binop(int_lit(3), BinaryOp::Add, float_lit(1.5));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Float(4.5));
+    }
+
+    #[test]
+    fn test_sub_integers() {
+        let expr = binop(int_lit(10), BinaryOp::Sub, int_lit(3));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Integer(7));
+    }
+
+    #[test]
+    fn test_mul_integers() {
+        let expr = binop(int_lit(6), BinaryOp::Mul, int_lit(7));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Integer(42));
+    }
+
+    #[test]
+    fn test_div_integers() {
+        let expr = binop(int_lit(10), BinaryOp::Div, int_lit(3));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Integer(3));
+    }
+
+    #[test]
+    fn test_div_by_zero_error() {
+        let expr = binop(int_lit(10), BinaryOp::Div, int_lit(0));
+        assert!(evaluate(&expr, &empty_record()).is_err());
+    }
+
+    #[test]
+    fn test_mod_integers() {
+        let expr = binop(int_lit(10), BinaryOp::Mod, int_lit(3));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Integer(1));
+    }
+
+    // -----------------------------------------------------------------------
+    // Comparison operations
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_eq_integers() {
+        let expr = binop(int_lit(5), BinaryOp::Eq, int_lit(5));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_neq_integers() {
+        let expr = binop(int_lit(5), BinaryOp::Neq, int_lit(3));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_lt_integers() {
+        let expr = binop(int_lit(3), BinaryOp::Lt, int_lit(5));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_gt_integers() {
+        let expr = binop(int_lit(5), BinaryOp::Gt, int_lit(3));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_le_integers() {
+        let expr = binop(int_lit(5), BinaryOp::Le, int_lit(5));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+        let expr2 = binop(int_lit(4), BinaryOp::Le, int_lit(5));
+        assert_eq!(evaluate(&expr2, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_ge_integers() {
+        let expr = binop(int_lit(5), BinaryOp::Ge, int_lit(5));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+        let expr2 = binop(int_lit(6), BinaryOp::Ge, int_lit(5));
+        assert_eq!(evaluate(&expr2, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_compare_strings() {
+        let expr = binop(str_lit("abc"), BinaryOp::Lt, str_lit("def"));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_compare_null_returns_null() {
+        let expr = binop(null_lit(), BinaryOp::Lt, int_lit(5));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Null);
+    }
+
+    // -----------------------------------------------------------------------
+    // Boolean logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_and_true_true() {
+        let expr = binop(bool_lit(true), BinaryOp::And, bool_lit(true));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_and_true_false() {
+        let expr = binop(bool_lit(true), BinaryOp::And, bool_lit(false));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_or_false_true() {
+        let expr = binop(bool_lit(false), BinaryOp::Or, bool_lit(true));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_xor_true_false() {
+        let expr = binop(bool_lit(true), BinaryOp::Xor, bool_lit(false));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_not_true() {
+        let expr = unaryop(UnaryOp::Not, bool_lit(true));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_not_false() {
+        let expr = unaryop(UnaryOp::Not, bool_lit(false));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_and_short_circuit() {
+        // false AND (unknown_identifier) should short-circuit to false
+        let error_expr = Expression::Identifier("nonexistent".to_string());
+        let expr = binop(bool_lit(false), BinaryOp::And, error_expr);
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+    }
+
+    // -----------------------------------------------------------------------
+    // String / list concatenation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_concat_strings() {
+        let expr = binop(str_lit("hello"), BinaryOp::Concat, str_lit(" world"));
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::String("hello world".to_string())
+        );
+    }
+
+    #[test]
+    fn test_concat_lists() {
+        let left = Expression::List(vec![int_lit(1)]);
+        let right = Expression::List(vec![int_lit(2), int_lit(3)]);
+        let expr = binop(left, BinaryOp::Concat, right);
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::List(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)])
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Null handling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_null_on_null() {
+        let expr = Expression::IsNull(Box::new(null_lit()));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_is_null_on_value() {
+        let expr = Expression::IsNull(Box::new(int_lit(5)));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_is_not_null_on_value() {
+        let expr = Expression::IsNotNull(Box::new(int_lit(5)));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_is_not_null_on_null() {
+        let expr = Expression::IsNotNull(Box::new(null_lit()));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+    }
+
+    // -----------------------------------------------------------------------
+    // Unary operations
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_neg_integer() {
+        let expr = unaryop(UnaryOp::Neg, int_lit(5));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Integer(-5));
+    }
+
+    #[test]
+    fn test_neg_float() {
+        let expr = unaryop(UnaryOp::Neg, float_lit(3.14));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Float(-3.14));
+    }
+
+    #[test]
+    fn test_pos_integer() {
+        let expr = unaryop(UnaryOp::Pos, int_lit(5));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Integer(5));
+    }
+
+    // -----------------------------------------------------------------------
+    // IN expression
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_in_found() {
+        let expr = Expression::In {
+            operand: Box::new(int_lit(3)),
+            list: Box::new(Expression::List(vec![int_lit(1), int_lit(2), int_lit(3)])),
+        };
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_in_not_found() {
+        let expr = Expression::In {
+            operand: Box::new(int_lit(4)),
+            list: Box::new(Expression::List(vec![int_lit(1), int_lit(2), int_lit(3)])),
+        };
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+    }
+
+    // -----------------------------------------------------------------------
+    // Function calls
+    // -----------------------------------------------------------------------
+
+    fn fn_call(name: &str, args: Vec<Expression>) -> Expression {
+        Expression::FunctionCall {
+            name: name.to_string(),
+            args,
+        }
+    }
+
+    #[test]
+    fn test_fn_tostring_integer() {
+        let expr = fn_call("toString", vec![int_lit(42)]);
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::String("42".to_string())
+        );
+    }
+
+    #[test]
+    fn test_fn_tointeger_string() {
+        let expr = fn_call("toInteger", vec![str_lit("42")]);
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Integer(42));
+    }
+
+    #[test]
+    fn test_fn_tofloat_integer() {
+        let expr = fn_call("toFloat", vec![int_lit(42)]);
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Float(42.0));
+    }
+
+    #[test]
+    fn test_fn_size_string() {
+        let expr = fn_call("size", vec![str_lit("hello")]);
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Integer(5));
+    }
+
+    #[test]
+    fn test_fn_size_list() {
+        let expr = fn_call(
+            "size",
+            vec![Expression::List(vec![int_lit(1), int_lit(2), int_lit(3)])],
+        );
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Integer(3));
+    }
+
+    #[test]
+    fn test_fn_keys_map() {
+        let expr = fn_call(
+            "keys",
+            vec![Expression::Map(vec![
+                ("a".to_string(), int_lit(1)),
+                ("b".to_string(), int_lit(2)),
+            ])],
+        );
+        let result = evaluate(&expr, &empty_record()).unwrap();
+        // BTreeMap keys are sorted alphabetically
+        assert_eq!(
+            result,
+            Value::List(vec![
+                Value::String("a".to_string()),
+                Value::String("b".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_fn_type_integer() {
+        let expr = fn_call("type", vec![int_lit(42)]);
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::String("INTEGER".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Property access
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_property_access_direct_column() {
+        let record = Record::new(
+            vec!["n.name".to_string()],
+            vec![Value::String("Alice".to_string())],
+        );
+        let expr = Expression::PropertyAccess {
+            object: Box::new(Expression::Identifier("n".to_string())),
+            property: "name".to_string(),
+        };
+        assert_eq!(
+            evaluate(&expr, &record).unwrap(),
+            Value::String("Alice".to_string())
+        );
+    }
+
+    #[test]
+    fn test_property_access_fallback() {
+        let record = Record::new(
+            vec!["name".to_string()],
+            vec![Value::String("Alice".to_string())],
+        );
+        let expr = Expression::PropertyAccess {
+            object: Box::new(Expression::Identifier("n".to_string())),
+            property: "name".to_string(),
+        };
+        assert_eq!(
+            evaluate(&expr, &record).unwrap(),
+            Value::String("Alice".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // CASE expression
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_case_when_match() {
+        let expr = Expression::Case {
+            operand: None,
+            when_clauses: vec![(bool_lit(true), str_lit("yes"))],
+            else_clause: Some(Box::new(str_lit("no"))),
+        };
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::String("yes".to_string())
+        );
+    }
+
+    #[test]
+    fn test_case_when_no_match() {
+        let expr = Expression::Case {
+            operand: None,
+            when_clauses: vec![(bool_lit(false), str_lit("yes"))],
+            else_clause: Some(Box::new(str_lit("no"))),
+        };
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::String("no".to_string())
+        );
+    }
+
+    #[test]
+    fn test_case_no_match_no_else() {
+        let expr = Expression::Case {
+            operand: None,
+            when_clauses: vec![(bool_lit(false), str_lit("yes"))],
+            else_clause: None,
+        };
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Null);
+    }
+
+    // -----------------------------------------------------------------------
+    // Identifier lookup
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_identifier_found() {
+        let record = Record::new(vec!["x".to_string()], vec![Value::Integer(42)]);
+        let expr = Expression::Identifier("x".to_string());
+        assert_eq!(evaluate(&expr, &record).unwrap(), Value::Integer(42));
+    }
+
+    #[test]
+    fn test_identifier_not_found_error() {
+        let expr = Expression::Identifier("missing".to_string());
+        assert!(evaluate(&expr, &empty_record()).is_err());
+    }
+}
