@@ -12,23 +12,22 @@ pub fn evaluate(expr: &Expression, context: &Record) -> Result<Value, ExecError>
             .cloned()
             .ok_or_else(|| ExecError::ExpressionError(format!("unknown identifier: {}", name))),
         Expression::PropertyAccess { object, property } => {
+            // For node-variable property access (e.g. n.name), try column
+            // lookups first so that an unresolvable variable does not short-
+            // circuit the fallback paths.
+            if let Expression::Identifier(var) = object.as_ref() {
+                let key = format!("{}.{}", var, property);
+                if let Some(v) = context.get(&key) {
+                    return Ok(v.clone());
+                }
+                if let Some(v) = context.get(property) {
+                    return Ok(v.clone());
+                }
+            }
             let obj = evaluate(object, context)?;
             match obj {
                 Value::Map(map) => Ok(map.get(property).cloned().unwrap_or(Value::Null)),
-                _ => {
-                    // For node-variable property access: try <var>.<prop> from the record
-                    if let Expression::Identifier(var) = object.as_ref() {
-                        let key = format!("{}.{}", var, property);
-                        if let Some(v) = context.get(&key) {
-                            return Ok(v.clone());
-                        }
-                        // Fall back to just the property name
-                        if let Some(v) = context.get(property) {
-                            return Ok(v.clone());
-                        }
-                    }
-                    Ok(Value::Null)
-                }
+                _ => Ok(Value::Null),
             }
         }
         Expression::BinaryOp { left, op, right } => {

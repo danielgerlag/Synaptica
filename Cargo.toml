@@ -1,5 +1,11 @@
+[package]
+name = "synaptica"
+version = "0.1.0"
+edition = "2021"
+
 [workspace]
 members = [
+    ".",
     "crates/synaptica-core",
     "crates/synaptica-storage",
     "crates/synaptica-tx",
@@ -65,6 +71,14 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 toml = "0.8"
 prometheus = "0.13"
+lazy_static = "1"
+
+[dev-dependencies]
+synaptica-core = { path = "crates/synaptica-core" }
+synaptica-gql = { path = "crates/synaptica-gql" }
+synaptica-storage = { path = "crates/synaptica-storage" }
+synaptica-exec = { path = "crates/synaptica-exec" }
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

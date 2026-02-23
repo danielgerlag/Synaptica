@@ -186,6 +186,22 @@ impl QueryPlanner {
                     };
                 }
 
+                if let Some(ref lo) = r.limit_offset {
+                    let count = lo.limit.as_ref().and_then(|e| match e {
+                        Expression::Literal(crate::ast::Literal::Integer(n)) => Some(*n as u64),
+                        _ => None,
+                    });
+                    let offset = lo.offset.as_ref().and_then(|e| match e {
+                        Expression::Literal(crate::ast::Literal::Integer(n)) => Some(*n as u64),
+                        _ => None,
+                    });
+                    plan = LogicalPlan::Limit {
+                        input: Box::new(plan),
+                        count,
+                        offset,
+                    };
+                }
+
                 Ok(plan)
             }
             _ => Err(PlanError::UnsupportedStatement),
