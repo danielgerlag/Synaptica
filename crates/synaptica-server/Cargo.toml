@@ -10,7 +10,7 @@ synaptica-tx = { workspace = true }
 synaptica-gql = { workspace = true }
 synaptica-exec = { workspace = true }
 synaptica-cluster = { workspace = true }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["tls"] }
 prost = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -23,6 +23,8 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+prometheus = { workspace = true }
+lazy_static = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

@@ -24,6 +24,9 @@ pub enum StorageError {
 
     #[error("column family not found: {0}")]
     CfNotFound(String),
+
+    #[error("unique constraint violation: {0}")]
+    UniqueViolation(String),
 }
 
 pub type StorageResult<T> = Result<T, StorageError>;

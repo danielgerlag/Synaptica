@@ -9,6 +9,8 @@ use synaptica_gql::parser;
 use synaptica_gql::planner::QueryPlanner;
 use synaptica_storage::engine::StorageEngine;
 
+use crate::metrics::{ACTIVE_CONNECTIONS, QUERIES_TOTAL, QUERY_DURATION};
+
 pub mod proto {
     tonic::include_proto!("synaptica.client.v1");
 }
@@ -28,17 +30,27 @@ pub struct SynapticaServiceImpl {
 
 #[tonic::async_trait]
 impl SynapticaService for SynapticaServiceImpl {
+    #[tracing::instrument(skip(self, request), fields(graph = ?self.default_graph_id))]
     async fn execute_query(
         &self,
         request: Request<QueryRequest>,
     ) -> Result<Response<QueryResponse>, Status> {
+        ACTIVE_CONNECTIONS.inc();
         let req = request.into_inner();
         let start = std::time::Instant::now();
+        let graph_name = self.default_graph_id.0.to_string();
+
+        tracing::info!(query = %req.query, graph = %graph_name, "executing query");
 
         // Parse
         let program = match parser::parse(&req.query) {
             Ok(p) => p,
             Err(e) => {
+                let elapsed = start.elapsed().as_secs_f64();
+                QUERY_DURATION.with_label_values(&[&graph_name]).observe(elapsed);
+                QUERIES_TOTAL.with_label_values(&["error"]).inc();
+                ACTIVE_CONNECTIONS.dec();
+                tracing::error!(error = %e, elapsed_ms = %start.elapsed().as_millis(), "parse error");
                 return Ok(Response::new(QueryResponse {
                     columns: vec![],
                     rows: vec![],
@@ -53,6 +65,11 @@ impl SynapticaService for SynapticaServiceImpl {
         let plan = match planner.plan(&program) {
             Ok(p) => p,
             Err(e) => {
+                let elapsed = start.elapsed().as_secs_f64();
+                QUERY_DURATION.with_label_values(&[&graph_name]).observe(elapsed);
+                QUERIES_TOTAL.with_label_values(&["error"]).inc();
+                ACTIVE_CONNECTIONS.dec();
+                tracing::error!(error = %e, elapsed_ms = %start.elapsed().as_millis(), "plan error");
                 return Ok(Response::new(QueryResponse {
                     columns: vec![],
                     rows: vec![],
@@ -67,6 +84,11 @@ impl SynapticaService for SynapticaServiceImpl {
         let result_set = match engine.execute_plan(&plan, &self.default_graph_id) {
             Ok(rs) => rs,
             Err(e) => {
+                let elapsed = start.elapsed().as_secs_f64();
+                QUERY_DURATION.with_label_values(&[&graph_name]).observe(elapsed);
+                QUERIES_TOTAL.with_label_values(&["error"]).inc();
+                ACTIVE_CONNECTIONS.dec();
+                tracing::error!(error = %e, elapsed_ms = %start.elapsed().as_millis(), "execution error");
                 return Ok(Response::new(QueryResponse {
                     columns: vec![],
                     rows: vec![],
@@ -76,8 +98,21 @@ impl SynapticaService for SynapticaServiceImpl {
             }
         };
 
-        let elapsed_ms = start.elapsed().as_millis() as i64;
+        let elapsed = start.elapsed();
+        QUERY_DURATION
+            .with_label_values(&[&graph_name])
+            .observe(elapsed.as_secs_f64());
+        QUERIES_TOTAL.with_label_values(&["success"]).inc();
+        ACTIVE_CONNECTIONS.dec();
+
+        let elapsed_ms = elapsed.as_millis() as i64;
         let rows_returned = result_set.records.len() as i64;
+
+        tracing::info!(
+            rows = rows_returned,
+            elapsed_ms = elapsed_ms,
+            "query completed"
+        );
 
         let columns = result_set.columns.clone();
         let rows: Vec<Row> = result_set
@@ -109,6 +144,7 @@ impl SynapticaService for SynapticaServiceImpl {
     type ExecuteQueryStreamStream =
         tokio_stream::wrappers::ReceiverStream<Result<QueryResponse, Status>>;
 
+    #[tracing::instrument(skip(self, _request))]
     async fn execute_query_stream(
         &self,
         _request: Request<QueryRequest>,
@@ -116,6 +152,7 @@ impl SynapticaService for SynapticaServiceImpl {
         Err(Status::unimplemented("execute_query_stream not implemented"))
     }
 
+    #[tracing::instrument(skip(self, _request))]
     async fn begin_transaction(
         &self,
         _request: Request<BeginTransactionRequest>,
@@ -123,6 +160,7 @@ impl SynapticaService for SynapticaServiceImpl {
         Err(Status::unimplemented("begin_transaction not implemented"))
     }
 
+    #[tracing::instrument(skip(self, _request))]
     async fn commit_transaction(
         &self,
         _request: Request<CommitTransactionRequest>,
@@ -130,6 +168,7 @@ impl SynapticaService for SynapticaServiceImpl {
         Err(Status::unimplemented("commit_transaction not implemented"))
     }
 
+    #[tracing::instrument(skip(self, _request))]
     async fn rollback_transaction(
         &self,
         _request: Request<RollbackTransactionRequest>,
@@ -139,6 +178,7 @@ impl SynapticaService for SynapticaServiceImpl {
         ))
     }
 
+    #[tracing::instrument(skip(self, _request))]
     async fn health(
         &self,
         _request: Request<HealthRequest>,
@@ -150,6 +190,7 @@ impl SynapticaService for SynapticaServiceImpl {
         }))
     }
 
+    #[tracing::instrument(skip(self, _request))]
     async fn cluster_status(
         &self,
         _request: Request<ClusterStatusRequest>,
