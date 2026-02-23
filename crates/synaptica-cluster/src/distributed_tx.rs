@@ -1,6 +1,7 @@
 use crate::partition::PartitionId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
@@ -82,9 +83,19 @@ pub enum LogEntry {
 ///
 /// Ensures crash recovery: if the coordinator crashes after prepare but before
 /// commit/abort, we can determine the outcome on recovery.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DistributedTxLog {
     entries: Vec<LogEntry>,
+    wal_file: Option<std::fs::File>,
+}
+
+impl Default for DistributedTxLog {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            wal_file: None,
+        }
+    }
 }
 
 impl DistributedTxLog {
@@ -92,26 +103,72 @@ impl DistributedTxLog {
         Self::default()
     }
 
+    /// Create a persistent WAL backed by a file.
+    pub fn with_path(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        Ok(Self {
+            entries: Vec::new(),
+            wal_file: Some(file),
+        })
+    }
+
+    /// Recover entries from a WAL file.
+    pub fn recover_from_file(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
+        let contents = std::fs::read_to_string(&path)?;
+        let mut entries = Vec::new();
+        for line in contents.lines() {
+            if let Ok(entry) = serde_json::from_str::<LogEntry>(line) {
+                entries.push(entry);
+            }
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        Ok(Self {
+            entries,
+            wal_file: Some(file),
+        })
+    }
+
+    fn persist_entry(&mut self, entry: &LogEntry) {
+        if let Some(ref mut file) = self.wal_file {
+            if let Ok(json) = serde_json::to_string(entry) {
+                let _ = writeln!(file, "{}", json);
+                let _ = file.flush();
+            }
+        }
+    }
+
     /// Record that we are entering the prepare phase for `tx_id`.
     pub fn log_prepare(&mut self, tx_id: &DistributedTxId, participants: &[PartitionId]) {
-        self.entries.push(LogEntry::Prepare {
+        let entry = LogEntry::Prepare {
             tx_id: tx_id.clone(),
             participants: participants.to_vec(),
-        });
+        };
+        self.entries.push(entry.clone());
+        self.persist_entry(&entry);
     }
 
     /// Record the commit decision for `tx_id`.
     pub fn log_commit(&mut self, tx_id: &DistributedTxId) {
-        self.entries.push(LogEntry::Commit {
+        let entry = LogEntry::Commit {
             tx_id: tx_id.clone(),
-        });
+        };
+        self.entries.push(entry.clone());
+        self.persist_entry(&entry);
     }
 
     /// Record the abort decision for `tx_id`.
     pub fn log_abort(&mut self, tx_id: &DistributedTxId) {
-        self.entries.push(LogEntry::Abort {
+        let entry = LogEntry::Abort {
             tx_id: tx_id.clone(),
-        });
+        };
+        self.entries.push(entry.clone());
+        self.persist_entry(&entry);
     }
 
     /// Return transaction IDs that have a prepare record but no commit/abort
@@ -488,5 +545,54 @@ mod tests {
         let in_doubt = coord.recover().unwrap();
         assert_eq!(in_doubt.len(), 1);
         assert!(in_doubt.contains(&tx1));
+    }
+
+    #[test]
+    fn test_wal_file_persistence() {
+        let dir = std::env::temp_dir().join("synaptica_wal_test_persist");
+        let _ = std::fs::create_dir_all(&dir);
+        let wal_path = dir.join("test.wal");
+        let _ = std::fs::remove_file(&wal_path);
+
+        let tx_id = DistributedTxId("tx-persist-1".to_string());
+        let participants = vec![PartitionId("p1".to_string())];
+
+        {
+            let mut log = DistributedTxLog::with_path(&wal_path).unwrap();
+            log.log_prepare(&tx_id, &participants);
+            log.log_commit(&tx_id);
+        }
+
+        let recovered = DistributedTxLog::recover_from_file(&wal_path).unwrap();
+        assert_eq!(recovered.entries().len(), 2);
+        assert!(recovered.in_doubt_transactions().is_empty());
+
+        let _ = std::fs::remove_file(&wal_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn test_wal_recovery_in_doubt() {
+        let dir = std::env::temp_dir().join("synaptica_wal_test_indoubt");
+        let _ = std::fs::create_dir_all(&dir);
+        let wal_path = dir.join("test.wal");
+        let _ = std::fs::remove_file(&wal_path);
+
+        let tx_id = DistributedTxId("tx-indoubt-1".to_string());
+        let participants = vec![PartitionId("p1".to_string())];
+
+        {
+            let mut log = DistributedTxLog::with_path(&wal_path).unwrap();
+            log.log_prepare(&tx_id, &participants);
+            // No commit or abort — simulates crash
+        }
+
+        let recovered = DistributedTxLog::recover_from_file(&wal_path).unwrap();
+        let in_doubt = recovered.in_doubt_transactions();
+        assert_eq!(in_doubt.len(), 1);
+        assert!(in_doubt.contains(&tx_id));
+
+        let _ = std::fs::remove_file(&wal_path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

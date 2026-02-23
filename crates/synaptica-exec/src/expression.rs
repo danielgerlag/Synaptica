@@ -39,14 +39,28 @@ pub fn evaluate(expr: &Expression, context: &Record) -> Result<Value, ExecError>
                         return Ok(Value::Bool(false));
                     }
                     let rv = evaluate(right, context)?;
-                    return eval_binary_op(&lv, op, &rv);
+                    if rv == Value::Bool(false) {
+                        return Ok(Value::Bool(false));
+                    }
+                    if lv == Value::Bool(true) && rv == Value::Bool(true) {
+                        return Ok(Value::Bool(true));
+                    }
+                    // At least one side is NULL and neither is false
+                    return Ok(Value::Null);
                 }
                 BinaryOp::Or => {
                     if lv == Value::Bool(true) {
                         return Ok(Value::Bool(true));
                     }
                     let rv = evaluate(right, context)?;
-                    return eval_binary_op(&lv, op, &rv);
+                    if rv == Value::Bool(true) {
+                        return Ok(Value::Bool(true));
+                    }
+                    if lv == Value::Bool(false) && rv == Value::Bool(false) {
+                        return Ok(Value::Bool(false));
+                    }
+                    // At least one side is NULL and neither is true
+                    return Ok(Value::Null);
                 }
                 _ => {}
             }
@@ -181,24 +195,40 @@ fn eval_binary_op(lv: &Value, op: &BinaryOp, rv: &Value) -> Result<Value, ExecEr
         BinaryOp::Sub => eval_arithmetic(lv, rv, |a, b| a - b, |a, b| a - b),
         BinaryOp::Mul => eval_arithmetic(lv, rv, |a, b| a * b, |a, b| a * b),
         BinaryOp::Div => {
-            // Check for division by zero
-            match (lv, rv) {
-                (Value::Integer(_), Value::Integer(0))
-                | (Value::Float(_), Value::Integer(0)) => {
+            // Check for division by zero (integer and float)
+            match rv {
+                Value::Integer(0) => {
+                    return Err(ExecError::ExpressionError("division by zero".into()));
+                }
+                Value::Float(f) if *f == 0.0 => {
                     return Err(ExecError::ExpressionError("division by zero".into()));
                 }
                 _ => {}
             }
             eval_arithmetic(lv, rv, |a, b| a / b, |a, b| a / b)
         }
-        BinaryOp::Mod => eval_arithmetic(lv, rv, |a, b| a % b, |a, b| a % b),
+        BinaryOp::Mod => {
+            // Check for modulo by zero
+            match rv {
+                Value::Integer(0) => {
+                    return Err(ExecError::ExpressionError("modulo by zero".into()));
+                }
+                Value::Float(f) if *f == 0.0 => {
+                    return Err(ExecError::ExpressionError("modulo by zero".into()));
+                }
+                _ => {}
+            }
+            eval_arithmetic(lv, rv, |a, b| a % b, |a, b| a % b)
+        }
 
         BinaryOp::And => match (lv, rv) {
-            (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a && *b)),
+            (Value::Bool(false), _) | (_, Value::Bool(false)) => Ok(Value::Bool(false)),
+            (Value::Bool(true), Value::Bool(true)) => Ok(Value::Bool(true)),
             _ => Ok(Value::Null),
         },
         BinaryOp::Or => match (lv, rv) {
-            (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a || *b)),
+            (Value::Bool(true), _) | (_, Value::Bool(true)) => Ok(Value::Bool(true)),
+            (Value::Bool(false), Value::Bool(false)) => Ok(Value::Bool(false)),
             _ => Ok(Value::Null),
         },
         BinaryOp::Xor => match (lv, rv) {
@@ -258,7 +288,12 @@ fn eval_arithmetic(
     float_op: fn(f64, f64) -> f64,
 ) -> Result<Value, ExecError> {
     match (lv, rv) {
-        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(int_op(*a, *b))),
+        (Value::Integer(a), Value::Integer(b)) => {
+            let (aa, bb) = (*a, *b);
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| int_op(aa, bb)))
+                .map(Value::Integer)
+                .map_err(|_| ExecError::ExpressionError("integer arithmetic overflow".into()))
+        }
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_op(*a, *b))),
         (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(float_op(*a as f64, *b))),
         (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(float_op(*a, *b as f64))),
@@ -910,5 +945,73 @@ mod tests {
     fn test_identifier_not_found_error() {
         let expr = Expression::Identifier("missing".to_string());
         assert!(evaluate(&expr, &empty_record()).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug-fix regression tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_modulo_by_zero_integer() {
+        let expr = binop(int_lit(5), BinaryOp::Mod, int_lit(0));
+        let result = evaluate(&expr, &empty_record());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("modulo by zero"));
+    }
+
+    #[test]
+    fn test_modulo_by_zero_float() {
+        let expr = binop(float_lit(5.0), BinaryOp::Mod, float_lit(0.0));
+        let result = evaluate(&expr, &empty_record());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("modulo by zero"));
+    }
+
+    #[test]
+    fn test_division_by_float_zero() {
+        let expr = binop(float_lit(10.0), BinaryOp::Div, float_lit(0.0));
+        let result = evaluate(&expr, &empty_record());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("division by zero"));
+    }
+
+    #[test]
+    fn test_division_by_float_zero_mixed() {
+        let expr = binop(int_lit(10), BinaryOp::Div, float_lit(0.0));
+        let result = evaluate(&expr, &empty_record());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("division by zero"));
+    }
+
+    #[test]
+    fn test_null_and_false_is_false() {
+        let expr = binop(null_lit(), BinaryOp::And, bool_lit(false));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_null_or_true_is_true() {
+        let expr = binop(null_lit(), BinaryOp::Or, bool_lit(true));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_null_and_true_is_null() {
+        let expr = binop(null_lit(), BinaryOp::And, bool_lit(true));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn test_null_or_false_is_null() {
+        let expr = binop(null_lit(), BinaryOp::Or, bool_lit(false));
+        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn test_integer_overflow_returns_error() {
+        let expr = binop(int_lit(i64::MAX), BinaryOp::Add, int_lit(1));
+        let result = evaluate(&expr, &empty_record());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("overflow"));
     }
 }

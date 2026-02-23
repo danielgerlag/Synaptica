@@ -69,6 +69,56 @@ impl ServerConfig {
     pub fn from_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let contents = std::fs::read_to_string(path)?;
         let config: ServerConfig = toml::from_str(&contents)?;
+        config.validate()?;
         Ok(config)
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if let Some(ref auth) = self.auth {
+            if auth.enabled && auth.tokens.is_empty() {
+                anyhow::bail!(
+                    "auth is enabled but no tokens are configured; add at least one token or disable auth"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_auth_empty_tokens_validation() {
+        let config = ServerConfig {
+            auth: Some(AuthConfig {
+                enabled: true,
+                tokens: vec![],
+            }),
+            ..ServerConfig::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_auth_with_tokens_validation() {
+        let config = ServerConfig {
+            auth: Some(AuthConfig {
+                enabled: true,
+                tokens: vec!["secret-token".to_string()],
+            }),
+            ..ServerConfig::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_no_auth_validation() {
+        let config = ServerConfig {
+            auth: None,
+            ..ServerConfig::default()
+        };
+        assert!(config.validate().is_ok());
     }
 }

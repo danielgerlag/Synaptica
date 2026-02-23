@@ -36,9 +36,12 @@ impl std::error::Error for ParseError {}
 // Parser
 // ---------------------------------------------------------------------------
 
+const MAX_EXPR_DEPTH: usize = 256;
+
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
+    depth: usize,
 }
 
 impl Parser {
@@ -47,7 +50,7 @@ impl Parser {
             .into_iter()
             .filter(|st| !matches!(st.token, Token::Comment(_)))
             .collect();
-        Parser { tokens, pos: 0 }
+        Parser { tokens, pos: 0, depth: 0 }
     }
 
     pub fn parse(&mut self) -> Result<GqlProgram, ParseError> {
@@ -118,6 +121,19 @@ impl Parser {
             line: span.line,
             column: span.column,
         }
+    }
+
+    fn enter_depth(&mut self) -> Result<(), ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_EXPR_DEPTH {
+            Err(self.error("expression nesting depth exceeded"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn exit_depth(&mut self) {
+        self.depth -= 1;
     }
 
     fn expect_ident(&mut self) -> Result<String, ParseError> {
@@ -451,7 +467,7 @@ impl Parser {
             labels,
             source,
             destination,
-            direction: Direction::Left,
+            direction: Direction::Outgoing,
             properties,
         })
     }
@@ -638,11 +654,11 @@ impl Parser {
                     self.expect(&Token::RBracket)?;
                     self.expect(&Token::Minus)?;
                 }
-                direction = Direction::Right;
+                direction = Direction::Incoming;
             }
             Token::Arrow => {
                 self.advance();
-                direction = Direction::Left;
+                direction = Direction::Outgoing;
             }
             Token::Minus => {
                 self.advance(); // -
@@ -650,7 +666,7 @@ impl Parser {
                 self.parse_edge_internals(&mut variable, &mut labels, &mut properties)?;
                 self.expect(&Token::RBracket)?;
                 if self.match_token(&Token::Arrow) {
-                    direction = Direction::Left;
+                    direction = Direction::Outgoing;
                 } else {
                     self.expect(&Token::Minus)?;
                     direction = Direction::Undirected;
@@ -739,6 +755,14 @@ impl Parser {
         } else {
             min // exact repetition
         };
+        if let (Some(min_val), Some(max_val)) = (min, max) {
+            if max_val < min_val {
+                return Err(self.error(&format!(
+                    "invalid quantifier: max ({}) cannot be less than min ({})",
+                    max_val, min_val
+                )));
+            }
+        }
         self.expect(&Token::RBrace)?;
         Ok(Some(Quantifier { min, max }))
     }
@@ -794,7 +818,9 @@ impl Parser {
     fn parse_not_expr(&mut self) -> Result<Expression, ParseError> {
         if self.peek() == &Token::Not {
             self.advance();
+            self.enter_depth()?;
             let operand = self.parse_not_expr()?;
+            self.exit_depth();
             Ok(Expression::UnaryOp {
                 op: UnaryOp::Not,
                 operand: Box::new(operand),
@@ -806,59 +832,28 @@ impl Parser {
 
     fn parse_comparison_expr(&mut self) -> Result<Expression, ParseError> {
         let mut left = self.parse_addition_expr()?;
+        let mut had_comparison = false;
         loop {
             match self.peek() {
-                Token::Eq => {
-                    self.advance();
-                    let right = self.parse_addition_expr()?;
-                    left = Expression::BinaryOp {
-                        left: Box::new(left),
-                        op: BinaryOp::Eq,
-                        right: Box::new(right),
+                Token::Eq | Token::Neq | Token::Lt | Token::Gt | Token::Le | Token::Ge => {
+                    if had_comparison {
+                        return Err(self.error("chained comparison operators are not allowed; use AND to combine conditions"));
+                    }
+                    had_comparison = true;
+                    let op = match self.peek() {
+                        Token::Eq => BinaryOp::Eq,
+                        Token::Neq => BinaryOp::Neq,
+                        Token::Lt => BinaryOp::Lt,
+                        Token::Gt => BinaryOp::Gt,
+                        Token::Le => BinaryOp::Le,
+                        Token::Ge => BinaryOp::Ge,
+                        _ => unreachable!(),
                     };
-                }
-                Token::Neq => {
                     self.advance();
                     let right = self.parse_addition_expr()?;
                     left = Expression::BinaryOp {
                         left: Box::new(left),
-                        op: BinaryOp::Neq,
-                        right: Box::new(right),
-                    };
-                }
-                Token::Lt => {
-                    self.advance();
-                    let right = self.parse_addition_expr()?;
-                    left = Expression::BinaryOp {
-                        left: Box::new(left),
-                        op: BinaryOp::Lt,
-                        right: Box::new(right),
-                    };
-                }
-                Token::Gt => {
-                    self.advance();
-                    let right = self.parse_addition_expr()?;
-                    left = Expression::BinaryOp {
-                        left: Box::new(left),
-                        op: BinaryOp::Gt,
-                        right: Box::new(right),
-                    };
-                }
-                Token::Le => {
-                    self.advance();
-                    let right = self.parse_addition_expr()?;
-                    left = Expression::BinaryOp {
-                        left: Box::new(left),
-                        op: BinaryOp::Le,
-                        right: Box::new(right),
-                    };
-                }
-                Token::Ge => {
-                    self.advance();
-                    let right = self.parse_addition_expr()?;
-                    left = Expression::BinaryOp {
-                        left: Box::new(left),
-                        op: BinaryOp::Ge,
+                        op,
                         right: Box::new(right),
                     };
                 }
@@ -972,7 +967,9 @@ impl Parser {
         match self.peek() {
             Token::Minus => {
                 self.advance();
+                self.enter_depth()?;
                 let operand = self.parse_unary_expr()?;
+                self.exit_depth();
                 Ok(Expression::UnaryOp {
                     op: UnaryOp::Neg,
                     operand: Box::new(operand),
@@ -980,7 +977,9 @@ impl Parser {
             }
             Token::Plus => {
                 self.advance();
+                self.enter_depth()?;
                 let operand = self.parse_unary_expr()?;
+                self.exit_depth();
                 Ok(Expression::UnaryOp {
                     op: UnaryOp::Pos,
                     operand: Box::new(operand),
@@ -1335,7 +1334,7 @@ mod tests {
                     PatternElement::Edge(e) => {
                         assert_eq!(e.variable.as_deref(), Some("r"));
                         assert_eq!(e.labels, vec!["KNOWS"]);
-                        assert_eq!(e.direction, Direction::Left);
+                        assert_eq!(e.direction, Direction::Outgoing);
                     }
                     _ => panic!("expected edge"),
                 }
@@ -1546,7 +1545,7 @@ mod tests {
                     PatternElement::Edge(e) => {
                         assert_eq!(e.variable.as_deref(), Some("r"));
                         assert_eq!(e.labels, vec!["KNOWS"]);
-                        assert_eq!(e.direction, Direction::Right);
+                        assert_eq!(e.direction, Direction::Incoming);
                     }
                     _ => panic!("expected edge"),
                 }
@@ -1640,14 +1639,14 @@ mod tests {
                 match &elems[1] {
                     PatternElement::Edge(e) => {
                         assert_eq!(e.variable.as_deref(), Some("r1"));
-                        assert_eq!(e.direction, Direction::Left);
+                        assert_eq!(e.direction, Direction::Outgoing);
                     }
                     _ => unreachable!(),
                 }
                 match &elems[3] {
                     PatternElement::Edge(e) => {
                         assert_eq!(e.variable.as_deref(), Some("r2"));
-                        assert_eq!(e.direction, Direction::Left);
+                        assert_eq!(e.direction, Direction::Outgoing);
                     }
                     _ => unreachable!(),
                 }
@@ -2163,6 +2162,76 @@ mod tests {
                         );
                     }
                     _ => panic!("expected BinaryOp"),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_chained_comparison_rejected() {
+        let result = parse("MATCH (n) WHERE n.a < 1 < 2 RETURN n");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("chained"),
+            "expected 'chained' in error message, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_single_comparison_still_works() {
+        let program = parse("MATCH (n) WHERE n.a < 1 RETURN n");
+        assert!(program.is_ok());
+    }
+
+    #[test]
+    fn test_deep_not_nesting_rejected() {
+        let nots = "NOT ".repeat(300);
+        let query = format!("MATCH (n) WHERE {}n.a RETURN n", nots);
+        let result = parse(&query);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("depth"),
+            "expected 'depth' in error message, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_quantifier_min_greater_than_max() {
+        let result = parse("MATCH (a)-[r]{5,2}->(b) RETURN a");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_direction_outgoing() {
+        let program = parse("MATCH (a)-[r]->(b) RETURN a").unwrap();
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                match &m.pattern.paths[0].elements[1] {
+                    PatternElement::Edge(e) => {
+                        assert_eq!(e.direction, Direction::Outgoing);
+                    }
+                    _ => panic!("expected edge"),
+                }
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_direction_incoming() {
+        let program = parse("MATCH (a)<-[r]-(b) RETURN a").unwrap();
+        match &program.statements[0] {
+            GqlStatement::Match(m) => {
+                match &m.pattern.paths[0].elements[1] {
+                    PatternElement::Edge(e) => {
+                        assert_eq!(e.direction, Direction::Incoming);
+                    }
+                    _ => panic!("expected edge"),
                 }
             }
             _ => panic!("expected MATCH"),

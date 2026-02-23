@@ -56,9 +56,9 @@ mod tests {
     #[test]
     fn test_route_to_first_partition() {
         let mut pm = PartitionMap::new();
-        pm.add_partition(make_partition("p1", 0x00, 0x40));
-        pm.add_partition(make_partition("p2", 0x40, 0x80));
-        pm.add_partition(make_partition("p3", 0x80, 0xFF));
+        pm.add_partition(make_partition("p1", 0x00, 0x40)).unwrap();
+        pm.add_partition(make_partition("p2", 0x40, 0x80)).unwrap();
+        pm.add_partition(make_partition("p3", 0x80, 0xFF)).unwrap();
 
         let router = QueryRouter::new();
         let result = router.route_query("hello", &pm);
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn test_route_preserves_query_text() {
         let mut pm = PartitionMap::new();
-        pm.add_partition(make_partition("p1", 0x00, 0xFF));
+        pm.add_partition(make_partition("p1", 0x00, 0xFF)).unwrap();
 
         let router = QueryRouter::new();
         let result = router.route_query("my search query", &pm);

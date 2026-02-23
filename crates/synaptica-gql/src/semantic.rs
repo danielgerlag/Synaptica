@@ -156,6 +156,21 @@ impl SemanticAnalyzer {
                     self.check_expression(val)?;
                 }
             }
+            Expression::Case { operand, when_clauses, else_clause } => {
+                if let Some(ref op) = operand {
+                    self.check_expression(op)?;
+                }
+                for (when_expr, then_expr) in when_clauses {
+                    self.check_expression(when_expr)?;
+                    self.check_expression(then_expr)?;
+                }
+                if let Some(ref el) = else_clause {
+                    self.check_expression(el)?;
+                }
+            }
+            Expression::TypeCast { expr, .. } => {
+                self.check_expression(expr)?;
+            }
             // Literals, parameters, etc. need no scope check.
             _ => {}
         }
@@ -268,6 +283,17 @@ mod tests {
         assert_eq!(
             result.unwrap_err(),
             SemanticError::DuplicateVariable("n".into())
+        );
+    }
+
+    #[test]
+    fn test_case_undefined_variable() {
+        let result = analyze_gql(
+            "MATCH (n) RETURN CASE WHEN m.age > 30 THEN 1 ELSE 0 END",
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            SemanticError::UndefinedVariable("m".into())
         );
     }
 }

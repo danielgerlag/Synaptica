@@ -143,23 +143,31 @@ impl QueryPlanner {
 
         match stmt {
             GqlStatement::Match(m) => {
-                // Build a Scan from the first path pattern's first node labels.
-                let labels: Vec<String> = m
-                    .pattern
-                    .paths
-                    .iter()
-                    .flat_map(|p| p.elements.iter())
-                    .filter_map(|e| match e {
-                        crate::ast::PatternElement::Node(n) => Some(n.labels.clone()),
-                        _ => None,
-                    })
-                    .flatten()
-                    .collect();
+                // Build one Scan per path pattern and combine with Join.
+                let mut scans: Vec<LogicalPlan> = Vec::new();
 
-                let mut plan = LogicalPlan::Scan {
-                    labels,
-                    graph_id: m.graph.clone(),
-                };
+                for path in &m.pattern.paths {
+                    let labels: Vec<String> = path.elements.iter()
+                        .filter_map(|e| match e {
+                            crate::ast::PatternElement::Node(n) => Some(n.labels.clone()),
+                            _ => None,
+                        })
+                        .flatten()
+                        .collect();
+
+                    scans.push(LogicalPlan::Scan {
+                        labels,
+                        graph_id: m.graph.clone(),
+                    });
+                }
+
+                let mut plan = scans.remove(0);
+                for scan in scans {
+                    plan = LogicalPlan::Join {
+                        left: Box::new(plan),
+                        right: Box::new(scan),
+                    };
+                }
 
                 if let Some(ref wc) = m.where_clause {
                     plan = LogicalPlan::Filter {

@@ -132,13 +132,25 @@ impl StorageEngine {
         let nodes_cf = self.cf(ColumnFamilies::NODES)?;
         let node_labels_cf = self.cf(ColumnFamilies::NODE_LABELS)?;
 
-        // Store node data
+        // Clean up old label indexes if node already exists with different labels
         let key = encoding::encode_node_key(&node.graph_id, &node.id);
+        if let Some(old_data) = self.db.get_cf(&nodes_cf, &key)? {
+            let old_node: Node = encoding::deserialize_value(&old_data)
+                .map_err(StorageError::Deserialization)?;
+            for old_label in &old_node.labels {
+                if !node.labels.contains(old_label) {
+                    let label_key = encoding::encode_node_label_key(&node.graph_id, old_label, &node.id);
+                    batch.delete_cf(&node_labels_cf, &label_key);
+                }
+            }
+        }
+
+        // Store node data
         let value =
             encoding::serialize_value(node).map_err(StorageError::Serialization)?;
         batch.put_cf(&nodes_cf, &key, &value);
 
-        // Index labels
+        // Index current labels
         for label in &node.labels {
             let label_key =
                 encoding::encode_node_label_key(&node.graph_id, label, &node.id);
@@ -240,8 +252,22 @@ impl StorageEngine {
         let adj_in_cf = self.cf(ColumnFamilies::ADJ_IN)?;
         let edge_labels_cf = self.cf(ColumnFamilies::EDGE_LABELS)?;
 
-        // Store edge data
+        // Clean up old indexes if edge already exists with different source/target/label
         let key = encoding::encode_edge_key(&edge.graph_id, &edge.id);
+        if let Some(old_data) = self.db.get_cf(&edges_cf, &key)? {
+            let old_edge: Edge = encoding::deserialize_value(&old_data)
+                .map_err(StorageError::Deserialization)?;
+            if old_edge.source != edge.source || old_edge.target != edge.target || old_edge.label != edge.label {
+                let old_adj_out = encoding::encode_adj_out_key(&edge.graph_id, &old_edge.source, &old_edge.label, &edge.id);
+                batch.delete_cf(&adj_out_cf, &old_adj_out);
+                let old_adj_in = encoding::encode_adj_in_key(&edge.graph_id, &old_edge.target, &old_edge.label, &edge.id);
+                batch.delete_cf(&adj_in_cf, &old_adj_in);
+                let old_label_key = encoding::encode_edge_label_key(&edge.graph_id, &old_edge.label, &edge.id);
+                batch.delete_cf(&edge_labels_cf, &old_label_key);
+            }
+        }
+
+        // Store edge data
         let value =
             encoding::serialize_value(edge).map_err(StorageError::Serialization)?;
         batch.put_cf(&edges_cf, &key, &value);
@@ -253,7 +279,6 @@ impl StorageEngine {
             &edge.label,
             &edge.id,
         );
-        // Value stores target node id for fast lookup without deserializing the edge
         batch.put_cf(&adj_out_cf, &adj_out_key, edge.target.as_bytes());
 
         // Incoming adjacency: target -> edge
@@ -882,5 +907,63 @@ mod tests {
             .unwrap();
         assert_eq!(b_in.len(), 1);
         assert_eq!(b_in[0].id, edge_ab.id);
+    }
+
+    #[test]
+    fn test_put_node_label_update_cleans_old_indexes() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let graph_id = GraphId::new();
+
+        let mut node = Node::new(graph_id);
+        node.add_label("Person");
+        engine.put_node(&node).unwrap();
+
+        let persons = engine.scan_nodes_by_label(&graph_id, &Label::new("Person")).unwrap();
+        assert_eq!(persons.len(), 1);
+
+        // Update labels: remove "Person", add "Employee"
+        node.labels.clear();
+        node.add_label("Employee");
+        engine.put_node(&node).unwrap();
+
+        let persons = engine.scan_nodes_by_label(&graph_id, &Label::new("Person")).unwrap();
+        assert!(persons.is_empty(), "stale Person label index should be cleaned up");
+
+        let employees = engine.scan_nodes_by_label(&graph_id, &Label::new("Employee")).unwrap();
+        assert_eq!(employees.len(), 1);
+        assert_eq!(employees[0].id, node.id);
+    }
+
+    #[test]
+    fn test_put_edge_source_target_update_cleans_old_indexes() {
+        let dir = temp_dir();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let graph_id = GraphId::new();
+
+        let node_a = Node::new(graph_id);
+        let node_b = Node::new(graph_id);
+        let node_c = Node::new(graph_id);
+        engine.put_node(&node_a).unwrap();
+        engine.put_node(&node_b).unwrap();
+        engine.put_node(&node_c).unwrap();
+
+        // Create edge A → B
+        let mut edge = Edge::new(graph_id, node_a.id, node_b.id, "KNOWS");
+        engine.put_edge(&edge).unwrap();
+
+        assert_eq!(engine.get_outgoing_edges(&graph_id, &node_a.id, None).unwrap().len(), 1);
+        assert_eq!(engine.get_incoming_edges(&graph_id, &node_b.id, None).unwrap().len(), 1);
+
+        // Update edge to A → C
+        edge.target = node_c.id;
+        engine.put_edge(&edge).unwrap();
+
+        let b_incoming = engine.get_incoming_edges(&graph_id, &node_b.id, None).unwrap();
+        assert!(b_incoming.is_empty(), "stale incoming index on B should be cleaned up");
+
+        let c_incoming = engine.get_incoming_edges(&graph_id, &node_c.id, None).unwrap();
+        assert_eq!(c_incoming.len(), 1);
+        assert_eq!(c_incoming[0].id, edge.id);
     }
 }

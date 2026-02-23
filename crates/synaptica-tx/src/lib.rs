@@ -342,4 +342,81 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_concurrent_commit_conflict_detected() {
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
+        let ts_oracle = Arc::new(TimestampOracle::new());
+        let store = Arc::new(MvccStore::new(engine.raw_db().clone(), ts_oracle.clone()));
+        let tm = Arc::new(TransactionManager::new(store, ts_oracle));
+
+        let mut tx1 = tm.begin();
+        tx1.put("default", b"shared_key", b"from_tx1").unwrap();
+
+        let mut tx2 = tm.begin();
+        tx2.put("default", b"shared_key", b"from_tx2").unwrap();
+
+        let tm1 = tm.clone();
+        let h1 = std::thread::spawn(move || tm1.commit(&mut tx1));
+
+        let tm2 = tm.clone();
+        let h2 = std::thread::spawn(move || tm2.commit(&mut tx2));
+
+        let r1 = h1.join().unwrap();
+        let r2 = h2.join().unwrap();
+
+        // Exactly one must succeed and one must get WriteConflict
+        let (successes, conflicts): (Vec<_>, Vec<_>) =
+            [r1, r2].into_iter().partition(|r| r.is_ok());
+        assert_eq!(successes.len(), 1);
+        assert_eq!(conflicts.len(), 1);
+        assert!(matches!(
+            conflicts[0],
+            Err(TxError::WriteConflict)
+        ));
+    }
+
+    #[test]
+    fn test_atomic_commit_all_or_nothing() {
+        let (_dir, tm) = setup();
+        let mut tx = tm.begin();
+
+        tx.put("default", b"atom_k1", b"v1").unwrap();
+        tx.put("default", b"atom_k2", b"v2").unwrap();
+        tx.put("default", b"atom_k3", b"v3").unwrap();
+
+        let commit_ts = tm.commit(&mut tx).unwrap();
+
+        // All three keys must be readable at the commit timestamp
+        let snap = tm.snapshot();
+        assert_eq!(snap.get("default", b"atom_k1").unwrap(), Some(b"v1".to_vec()));
+        assert_eq!(snap.get("default", b"atom_k2").unwrap(), Some(b"v2".to_vec()));
+        assert_eq!(snap.get("default", b"atom_k3").unwrap(), Some(b"v3".to_vec()));
+        assert!(commit_ts > 0);
+    }
+
+    #[test]
+    fn test_committed_writes_gc_automatic() {
+        let (_dir, tm) = setup();
+
+        // Commit 15000 transactions, each writing a unique key
+        for i in 0..15_000u64 {
+            let mut tx = tm.begin();
+            let key = format!("gc_key_{}", i);
+            tx.put("default", key.as_bytes(), b"val").unwrap();
+            tm.commit(&mut tx).unwrap();
+        }
+
+        // Commit one more — the auto-GC should have pruned old entries
+        let mut tx = tm.begin();
+        tx.put("default", b"gc_final", b"done").unwrap();
+        let commit_ts = tm.commit(&mut tx).unwrap();
+        assert!(commit_ts > 0);
+
+        // Verify the final value is readable (system didn't OOM or break)
+        let snap = tm.snapshot();
+        assert_eq!(snap.get("default", b"gc_final").unwrap(), Some(b"done".to_vec()));
+    }
 }

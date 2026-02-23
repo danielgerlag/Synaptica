@@ -10,7 +10,7 @@ use rocksdb::{DBWithThreadMode, Direction, IteratorMode, MultiThreaded};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use synaptica_core::graph::{GraphId, Node, NodeId};
 use synaptica_core::types::Value;
 
@@ -92,11 +92,12 @@ fn encode_value_comparable(value: &Value, buf: &mut Vec<u8>) {
 /// Manages secondary property indexes stored in the `PROP_INDEX` column family.
 pub struct IndexManager {
     db: Arc<DBWithThreadMode<MultiThreaded>>,
+    unique_lock: Mutex<()>,
 }
 
 impl IndexManager {
     pub fn new(db: Arc<DBWithThreadMode<MultiThreaded>>) -> Self {
-        Self { db }
+        Self { db, unique_lock: Mutex::new(()) }
     }
 
     fn cf(&self) -> StorageResult<Arc<rocksdb::BoundColumnFamily<'_>>> {
@@ -217,6 +218,7 @@ impl IndexManager {
         let encoded = Self::encode_properties(def, node);
 
         if def.unique {
+            let _guard = self.unique_lock.lock().unwrap();
             let vp = Self::entry_value_prefix(def, &encoded);
             for item in self.db.prefix_iterator_cf(&cf, &vp) {
                 let (key, _) = item?;
@@ -237,6 +239,9 @@ impl IndexManager {
                     }
                 }
             }
+            let key = Self::entry_key(def, &encoded, node.id.as_bytes());
+            self.db.put_cf(&cf, &key, &[])?;
+            return Ok(());
         }
 
         let key = Self::entry_key(def, &encoded, node.id.as_bytes());

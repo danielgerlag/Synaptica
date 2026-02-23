@@ -221,6 +221,28 @@ impl MvccStore {
         Ok(results)
     }
 
+    /// Batch write multiple versioned operations (puts and deletes) atomically.
+    pub fn batch_write_at(
+        &self,
+        writes: &[(&str, &[u8], Option<&[u8]>)], // (cf_name, key, value) — None = tombstone
+        timestamp: u64,
+    ) -> MvccResult<()> {
+        let mut batch = WriteBatch::default();
+        for (cf_name, key, value) in writes {
+            let cf = self
+                .db
+                .cf_handle(cf_name)
+                .ok_or_else(|| MvccError::CfNotFound(cf_name.to_string()))?;
+            let versioned = encode_versioned_key(key, timestamp);
+            match value {
+                Some(v) => batch.put_cf(&cf, &versioned, v),
+                None => batch.put_cf(&cf, &versioned, TOMBSTONE),
+            }
+        }
+        self.db.write(batch)?;
+        Ok(())
+    }
+
     /// Batch write multiple versioned key-value pairs atomically.
     pub fn batch_put_at(
         &self,

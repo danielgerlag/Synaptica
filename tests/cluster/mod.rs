@@ -46,9 +46,9 @@ fn make_partition(id: &str, start: u8, end: u8, leader: &str) -> Partition {
 #[test]
 fn test_partition_routing_integration() {
     let mut pm = PartitionMap::new();
-    pm.add_partition(make_partition("p1", 0x00, 0x55, "node-1"));
-    pm.add_partition(make_partition("p2", 0x55, 0xAA, "node-2"));
-    pm.add_partition(make_partition("p3", 0xAA, 0xFF, "node-3"));
+    pm.add_partition(make_partition("p1", 0x00, 0x55, "node-1")).unwrap();
+    pm.add_partition(make_partition("p2", 0x55, 0xAA, "node-2")).unwrap();
+    pm.add_partition(make_partition("p3", 0xAA, 0xFF, "node-3")).unwrap();
 
     let router = QueryRouter::new();
     let result = router.route_query("SELECT * FROM nodes", &pm);
@@ -89,9 +89,9 @@ fn test_partition_map_with_membership() {
     membership.add_node(make_node("node-3", true));
 
     let mut pm = PartitionMap::new();
-    pm.add_partition(make_partition("p1", 0x00, 0x55, "node-1"));
-    pm.add_partition(make_partition("p2", 0x55, 0xAA, "node-2"));
-    pm.add_partition(make_partition("p3", 0xAA, 0xFF, "node-3"));
+    pm.add_partition(make_partition("p1", 0x00, 0x55, "node-1")).unwrap();
+    pm.add_partition(make_partition("p2", 0x55, 0xAA, "node-2")).unwrap();
+    pm.add_partition(make_partition("p3", 0xAA, 0xFF, "node-3")).unwrap();
 
     // Mark node-2 as dead.
     membership.mark_dead("node-2");
@@ -147,9 +147,9 @@ fn test_full_cluster_simulation() {
 
     // (b) Partition map
     let mut pm = PartitionMap::new();
-    pm.add_partition(make_partition("p1", 0x00, 0x55, "node-1"));
-    pm.add_partition(make_partition("p2", 0x55, 0xAA, "node-2"));
-    pm.add_partition(make_partition("p3", 0xAA, 0xFF, "node-3"));
+    pm.add_partition(make_partition("p1", 0x00, 0x55, "node-1")).unwrap();
+    pm.add_partition(make_partition("p2", 0x55, 0xAA, "node-2")).unwrap();
+    pm.add_partition(make_partition("p3", 0xAA, 0xFF, "node-3")).unwrap();
     assert_eq!(pm.all_partitions().len(), 3);
 
     // (c) Route a query

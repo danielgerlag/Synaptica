@@ -288,10 +288,10 @@ pub enum PathMode {
 /// Edge direction.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Direction {
-    /// `->` or `-[…]->`
-    Left,
-    /// `<-` or `<-[…]-`
-    Right,
+    /// `->` or `-[…]->` — outgoing edge
+    Outgoing,
+    /// `<-` or `<-[…]-` — incoming edge
+    Incoming,
     /// `-` or `-[…]-`
     Undirected,
 }

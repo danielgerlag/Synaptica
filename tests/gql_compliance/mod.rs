@@ -180,7 +180,7 @@ mod parser_compliance {
             if let PatternElement::Edge(e) = &elems[1] {
                 assert_eq!(e.labels, vec!["KNOWS"]);
                 assert_eq!(e.variable.as_deref(), Some("r"));
-                assert_eq!(e.direction, Direction::Left); // -> means Left in AST
+                assert_eq!(e.direction, Direction::Outgoing); // -> means Outgoing
             } else {
                 panic!("expected edge");
             }

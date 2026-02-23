@@ -31,11 +31,23 @@ impl PartitionMap {
         Self::default()
     }
 
-    pub fn add_partition(&mut self, partition: Partition) {
+    pub fn add_partition(&mut self, partition: Partition) -> Result<(), String> {
+        // Check for overlapping ranges
+        for existing in &self.partitions {
+            if partition.range.start < existing.range.end
+                && partition.range.end > existing.range.start
+            {
+                return Err(format!(
+                    "partition '{}' overlaps with existing partition '{}'",
+                    partition.id.0, existing.id.0
+                ));
+            }
+        }
         self.partitions.push(partition);
         // Keep sorted by range start for deterministic lookups.
         self.partitions
             .sort_by(|a, b| a.range.start.cmp(&b.range.start));
+        Ok(())
     }
 
     /// Find the partition whose range contains `key`.
@@ -69,7 +81,7 @@ mod tests {
     #[test]
     fn test_add_partition() {
         let mut pm = PartitionMap::new();
-        pm.add_partition(make_partition("p1", 0x00, 0x80));
+        pm.add_partition(make_partition("p1", 0x00, 0x80)).unwrap();
         assert_eq!(pm.all_partitions().len(), 1);
         assert_eq!(pm.all_partitions()[0].id, PartitionId("p1".to_string()));
     }
@@ -77,7 +89,7 @@ mod tests {
     #[test]
     fn test_find_partition_in_range() {
         let mut pm = PartitionMap::new();
-        pm.add_partition(make_partition("p1", 0x00, 0x80));
+        pm.add_partition(make_partition("p1", 0x00, 0x80)).unwrap();
         let found = pm.find_partition(&[0x40]);
         assert!(found.is_some());
         assert_eq!(found.unwrap().id, PartitionId("p1".to_string()));
@@ -86,16 +98,16 @@ mod tests {
     #[test]
     fn test_find_partition_not_in_range() {
         let mut pm = PartitionMap::new();
-        pm.add_partition(make_partition("p1", 0x00, 0x80));
+        pm.add_partition(make_partition("p1", 0x00, 0x80)).unwrap();
         assert!(pm.find_partition(&[0xFF]).is_none());
     }
 
     #[test]
     fn test_multiple_partitions() {
         let mut pm = PartitionMap::new();
-        pm.add_partition(make_partition("p1", 0x00, 0x40));
-        pm.add_partition(make_partition("p2", 0x40, 0x80));
-        pm.add_partition(make_partition("p3", 0x80, 0xFF));
+        pm.add_partition(make_partition("p1", 0x00, 0x40)).unwrap();
+        pm.add_partition(make_partition("p2", 0x40, 0x80)).unwrap();
+        pm.add_partition(make_partition("p3", 0x80, 0xFF)).unwrap();
 
         assert_eq!(pm.find_partition(&[0x20]).unwrap().id, PartitionId("p1".to_string()));
         assert_eq!(pm.find_partition(&[0x60]).unwrap().id, PartitionId("p2".to_string()));
@@ -105,14 +117,14 @@ mod tests {
     #[test]
     fn test_partition_boundary_start() {
         let mut pm = PartitionMap::new();
-        pm.add_partition(make_partition("p1", 0x00, 0x80));
+        pm.add_partition(make_partition("p1", 0x00, 0x80)).unwrap();
         assert!(pm.find_partition(&[0x00]).is_some());
     }
 
     #[test]
     fn test_partition_boundary_end() {
         let mut pm = PartitionMap::new();
-        pm.add_partition(make_partition("p1", 0x00, 0x80));
+        pm.add_partition(make_partition("p1", 0x00, 0x80)).unwrap();
         // End is exclusive
         assert!(pm.find_partition(&[0x80]).is_none());
     }
@@ -127,13 +139,30 @@ mod tests {
     fn test_partitions_sorted_after_add() {
         let mut pm = PartitionMap::new();
         // Add out of order
-        pm.add_partition(make_partition("p3", 0x80, 0xFF));
-        pm.add_partition(make_partition("p1", 0x00, 0x40));
-        pm.add_partition(make_partition("p2", 0x40, 0x80));
+        pm.add_partition(make_partition("p3", 0x80, 0xFF)).unwrap();
+        pm.add_partition(make_partition("p1", 0x00, 0x40)).unwrap();
+        pm.add_partition(make_partition("p2", 0x40, 0x80)).unwrap();
 
         let partitions = pm.all_partitions();
         assert_eq!(partitions[0].id, PartitionId("p1".to_string()));
         assert_eq!(partitions[1].id, PartitionId("p2".to_string()));
         assert_eq!(partitions[2].id, PartitionId("p3".to_string()));
+    }
+
+    #[test]
+    fn test_overlapping_partition_rejected() {
+        let mut pm = PartitionMap::new();
+        pm.add_partition(make_partition("p1", 0x00, 0x80)).unwrap();
+        let result = pm.add_partition(make_partition("p2", 0x40, 0xC0));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("overlaps"));
+    }
+
+    #[test]
+    fn test_non_overlapping_partition_accepted() {
+        let mut pm = PartitionMap::new();
+        pm.add_partition(make_partition("p1", 0x00, 0x40)).unwrap();
+        pm.add_partition(make_partition("p2", 0x40, 0x80)).unwrap();
+        assert_eq!(pm.all_partitions().len(), 2);
     }
 }

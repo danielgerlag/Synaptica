@@ -42,12 +42,12 @@ pub struct BufferedWrite {
 }
 
 /// A single MVCC transaction with snapshot isolation.
+/// Provides snapshot isolation with write-write conflict detection.
 pub struct Transaction {
     pub id: u64,
     pub snapshot_ts: u64,
     pub state: TxState,
     write_set: Vec<BufferedWrite>,
-    read_keys: Vec<(String, Vec<u8>)>,
     store: Arc<MvccStore>,
 }
 
@@ -59,7 +59,6 @@ impl Transaction {
             snapshot_ts,
             state: TxState::Active,
             write_set: Vec::new(),
-            read_keys: Vec::new(),
             store,
         }
     }
@@ -76,10 +75,6 @@ impl Transaction {
                 return Ok(w.value.clone());
             }
         }
-
-        // Track read for conflict detection
-        self.read_keys
-            .push((cf_name.to_string(), key.to_vec()));
 
         // Read from MVCC store at snapshot
         Ok(self.store.get_at(cf_name, key, self.snapshot_ts)?)
@@ -114,10 +109,5 @@ impl Transaction {
     /// Get the write set (for conflict detection).
     pub fn write_set(&self) -> &[BufferedWrite] {
         &self.write_set
-    }
-
-    /// Get the read set (for conflict detection).
-    pub fn read_keys(&self) -> &[(String, Vec<u8>)] {
-        &self.read_keys
     }
 }

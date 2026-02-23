@@ -32,42 +32,62 @@ impl TransactionManager {
         Transaction::new(tx_id, snapshot_ts, self.store.clone())
     }
 
-    /// Commit a transaction: validate no conflicts, then apply writes.
+    /// Commit a transaction: validate no conflicts, then apply writes atomically.
     pub fn commit(&self, tx: &mut Transaction) -> TxResult<u64> {
         if tx.state != TxState::Active {
             return Err(TxError::AlreadyCommitted);
         }
 
-        // Check for write-write conflicts: did any concurrent transaction
-        // commit writes to keys in our write set since our snapshot?
-        self.check_conflicts(tx)?;
+        // Hold write lock for the entire conflict check + commit to prevent TOCTOU races
+        let mut cw = self.committed_writes.write();
 
-        // Get commit timestamp
-        let commit_ts = self.ts_oracle.next();
+        // Inline conflict check: did any concurrent transaction commit writes
+        // to keys in our write set since our snapshot?
+        let write_keys: std::collections::HashSet<(&str, &[u8])> = tx
+            .write_set()
+            .iter()
+            .map(|w| (w.cf_name.as_str(), w.key.as_slice()))
+            .collect();
 
-        // Apply all buffered writes at the commit timestamp
-        for write in tx.write_set() {
-            match &write.value {
-                Some(value) => {
-                    self.store.put_at(&write.cf_name, &write.key, value, commit_ts)?;
-                }
-                None => {
-                    self.store.delete_at(&write.cf_name, &write.key, commit_ts)?;
+        if !write_keys.is_empty() {
+            for (&commit_ts, keys) in cw.iter() {
+                if commit_ts > tx.snapshot_ts {
+                    for (cf, key) in keys {
+                        if write_keys.contains(&(cf.as_str(), key.as_slice())) {
+                            return Err(TxError::WriteConflict);
+                        }
+                    }
                 }
             }
         }
 
+        // Get commit timestamp
+        let commit_ts = self.ts_oracle.next();
+
+        // Apply all buffered writes atomically via batch
+        let writes: Vec<(&str, &[u8], Option<&[u8]>)> = tx
+            .write_set()
+            .iter()
+            .map(|w| (w.cf_name.as_str(), w.key.as_slice(), w.value.as_deref()))
+            .collect();
+        self.store.batch_write_at(&writes, commit_ts)?;
+
         // Record committed writes for future conflict detection
-        let write_keys: Vec<(String, Vec<u8>)> = tx
+        let committed_keys: Vec<(String, Vec<u8>)> = tx
             .write_set()
             .iter()
             .map(|w| (w.cf_name.clone(), w.key.clone()))
             .collect();
+        cw.insert(commit_ts, committed_keys);
 
-        {
-            let mut cw = self.committed_writes.write();
-            cw.insert(commit_ts, write_keys);
+        // Auto-GC: prune old entries to prevent unbounded growth
+        const GC_THRESHOLD: usize = 10_000;
+        if cw.len() > GC_THRESHOLD {
+            let gc_watermark = commit_ts.saturating_sub(GC_THRESHOLD as u64);
+            cw.retain(|&ts, _| ts > gc_watermark);
         }
+
+        drop(cw);
 
         tx.state = TxState::Committed;
         Ok(commit_ts)
@@ -79,34 +99,6 @@ impl TransactionManager {
             return Err(TxError::NotActive);
         }
         tx.state = TxState::RolledBack;
-        Ok(())
-    }
-
-    /// Check for write-write conflicts.
-    fn check_conflicts(&self, tx: &Transaction) -> TxResult<()> {
-        let cw = self.committed_writes.read();
-
-        let write_keys: std::collections::HashSet<(&str, &[u8])> = tx
-            .write_set()
-            .iter()
-            .map(|w| (w.cf_name.as_str(), w.key.as_slice()))
-            .collect();
-
-        if write_keys.is_empty() {
-            return Ok(());
-        }
-
-        // Check all transactions committed after our snapshot
-        for (&commit_ts, keys) in cw.iter() {
-            if commit_ts > tx.snapshot_ts {
-                for (cf, key) in keys {
-                    if write_keys.contains(&(cf.as_str(), key.as_slice())) {
-                        return Err(TxError::WriteConflict);
-                    }
-                }
-            }
-        }
-
         Ok(())
     }
 
