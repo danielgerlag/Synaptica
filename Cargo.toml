@@ -47,8 +47,13 @@ bincode = "1"
 
 # gRPC
 tonic = "0.12"
+tonic-web = "0.12"
 prost = "0.13"
 tonic-build = "0.12"
+
+# HTTP / Tower
+http = "1"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 
 # Raft consensus
 openraft = { version = "0.9", features = ["serde"] }

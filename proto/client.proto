@@ -23,6 +23,24 @@ service SynapticaService {
 
   // Get cluster status information.
   rpc ClusterStatus(ClusterStatusRequest) returns (ClusterStatusResponse);
+
+  // List all node and edge labels with counts.
+  rpc ListLabels(ListLabelsRequest) returns (ListLabelsResponse);
+
+  // Get schema information (labels + property keys).
+  rpc GetSchema(GetSchemaRequest) returns (GetSchemaResponse);
+
+  // List secondary indexes.
+  rpc ListIndexes(ListIndexesRequest) returns (ListIndexesResponse);
+
+  // Create a secondary index.
+  rpc CreateIndex(CreateIndexRequest) returns (CreateIndexResponse);
+
+  // Drop a secondary index.
+  rpc DropIndex(DropIndexRequest) returns (DropIndexResponse);
+
+  // Get server metrics.
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
 }
 
 message QueryRequest {
@@ -137,4 +155,78 @@ message ClusterNode {
   string address = 2;
   string role = 3;
   bool is_healthy = 4;
+}
+
+message ListLabelsRequest {
+  string graph_name = 1;
+}
+
+message ListLabelsResponse {
+  repeated LabelInfo node_labels = 1;
+  repeated LabelInfo edge_labels = 2;
+}
+
+message LabelInfo {
+  string name = 1;
+  int64 count = 2;
+}
+
+message GetSchemaRequest {
+  string graph_name = 1;
+}
+
+message GetSchemaResponse {
+  repeated LabelSchema node_schemas = 1;
+  repeated LabelSchema edge_schemas = 2;
+}
+
+message LabelSchema {
+  string label = 1;
+  repeated string property_keys = 2;
+  int64 count = 3;
+}
+
+message ListIndexesRequest {
+  string graph_name = 1;
+}
+
+message ListIndexesResponse {
+  repeated IndexInfo indexes = 1;
+}
+
+message IndexInfo {
+  string name = 1;
+  string entity_type = 2;
+  repeated string property_names = 3;
+  bool is_unique = 4;
+}
+
+message CreateIndexRequest {
+  string graph_name = 1;
+  string name = 2;
+  string entity_type = 3;
+  repeated string property_names = 4;
+  bool is_unique = 5;
+}
+
+message CreateIndexResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+message DropIndexRequest {
+  string graph_name = 1;
+  string name = 2;
+}
+
+message DropIndexResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+message GetMetricsRequest {}
+
+message GetMetricsResponse {
+  map<string, double> gauges = 1;
+  map<string, int64> counters = 2;
 }

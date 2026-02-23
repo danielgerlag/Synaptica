@@ -1,0 +1,46 @@
+{
+  "name": "synaptica-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "proto:gen": "npx buf generate"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.0.0",
+    "zustand": "^5.0.0",
+    "d3": "^7.9.0",
+    "@codemirror/state": "^6.4.0",
+    "@codemirror/view": "^6.35.0",
+    "@codemirror/language": "^6.10.0",
+    "@codemirror/commands": "^6.7.0",
+    "@codemirror/lang-sql": "^6.8.0",
+    "codemirror": "^6.0.0",
+    "@codemirror/theme-one-dark": "^6.1.0",
+    "recharts": "^2.15.0",
+    "grpc-web": "^1.5.0",
+    "google-protobuf": "^3.21.0",
+    "lucide-react": "^0.468.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.0",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/d3": "^7.4.0",
+    "@types/google-protobuf": "^3.15.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0",
+    "tailwindcss": "^4.0.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "grpc_tools_node_protoc_ts": "^5.3.0",
+    "grpc-tools": "^1.12.0"
+  }
+}
