@@ -1,13 +1,14 @@
 use crate::expression::evaluate;
 use crate::operators::ExecutionContext;
 use crate::result::{Record, ResultSet};
-use synaptica_core::graph::{GraphId, Label, Node};
+use synaptica_core::graph::{Edge, GraphId, Label, Node, NodeId};
 use synaptica_core::types::Value;
 use synaptica_gql::ast::Expression;
 use synaptica_gql::planner::LogicalPlan;
 use synaptica_storage::engine::StorageEngine;
 use std::cmp::Ordering;
 use std::fmt;
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Error
@@ -73,7 +74,7 @@ impl<'a> ExecutionEngine<'a> {
         ctx: &ExecutionContext<'_>,
     ) -> Result<ResultSet, ExecError> {
         match plan {
-            LogicalPlan::Scan { labels, .. } => self.exec_scan(labels, ctx),
+            LogicalPlan::Scan { labels, variable, .. } => self.exec_scan(labels, variable, ctx),
             LogicalPlan::Filter { input, predicate } => {
                 let rs = self.execute_node(input, ctx)?;
                 self.exec_filter(rs, predicate)
@@ -97,6 +98,15 @@ impl<'a> ExecutionEngine<'a> {
             LogicalPlan::CreateNode { labels, properties } => {
                 self.exec_create_node(labels, properties, ctx)
             }
+            LogicalPlan::Join { left, right } => {
+                let left_rs = self.execute_node(left, ctx)?;
+                let right_rs = self.execute_node(right, ctx)?;
+                self.exec_join(left_rs, right_rs)
+            }
+            LogicalPlan::CreateEdgeFromMatch { input, source_var, target_var, label, properties } => {
+                let rs = self.execute_node(input, ctx)?;
+                self.exec_create_edge_from_match(rs, source_var, target_var, label, properties, ctx)
+            }
             LogicalPlan::Empty => Ok(ResultSet::new(vec![])),
             _ => Err(ExecError::NotImplemented(format!(
                 "{:?}",
@@ -110,6 +120,7 @@ impl<'a> ExecutionEngine<'a> {
     fn exec_scan(
         &self,
         labels: &[String],
+        variable: &Option<String>,
         ctx: &ExecutionContext<'_>,
     ) -> Result<ResultSet, ExecError> {
         let nodes = if labels.is_empty() {
@@ -132,10 +143,18 @@ impl<'a> ExecutionEngine<'a> {
         let mut columns = vec!["__node_id".to_string(), "__labels".to_string()];
         columns.extend(all_keys.clone());
 
+        if let Some(var) = variable {
+            columns.push(var.clone());
+            for key in &all_keys {
+                columns.push(format!("{}.{}", var, key));
+            }
+        }
+
         let mut rs = ResultSet::new(columns);
         for node in &nodes {
             let mut values: Vec<Value> = Vec::new();
-            values.push(Value::String(node.id.0.to_string()));
+            let id_str = node.id.0.to_string();
+            values.push(Value::String(id_str.clone()));
             let label_list: Vec<Value> = node
                 .labels
                 .iter()
@@ -150,6 +169,24 @@ impl<'a> ExecutionEngine<'a> {
                         .unwrap_or(Value::Null),
                 );
             }
+
+            if let Some(_var) = variable {
+                let node_val = Value::Node {
+                    id: id_str,
+                    labels: node.labels.iter().map(|l| l.0.clone()).collect(),
+                    properties: node.properties.clone(),
+                };
+                values.push(node_val);
+                for key in &all_keys {
+                    values.push(
+                        node.properties
+                            .get(key)
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                    );
+                }
+            }
+
             rs.add_record(values);
         }
         Ok(rs)
@@ -275,6 +312,83 @@ impl<'a> ExecutionEngine<'a> {
 
         let mut rs = ResultSet::new(vec!["__node_id".to_string()]);
         rs.add_record(vec![Value::String(node.id.0.to_string())]);
+        Ok(rs)
+    }
+
+    // -- Join ---------------------------------------------------------------
+
+    fn exec_join(
+        &self,
+        left: ResultSet,
+        right: ResultSet,
+    ) -> Result<ResultSet, ExecError> {
+        let mut columns = left.columns.clone();
+        columns.extend(right.columns.clone());
+        let mut rs = ResultSet::new(columns);
+        for l in &left.records {
+            for r in &right.records {
+                let mut values = l.values.clone();
+                values.extend(r.values.clone());
+                rs.add_record(values);
+            }
+        }
+        Ok(rs)
+    }
+
+    // -- CreateEdgeFromMatch ------------------------------------------------
+
+    fn exec_create_edge_from_match(
+        &self,
+        input: ResultSet,
+        source_var: &str,
+        target_var: &str,
+        label: &str,
+        properties: &[(String, Expression)],
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<ResultSet, ExecError> {
+        let mut rs = ResultSet::new(vec!["__edge_id".to_string()]);
+        let dummy = Record::new(vec![], vec![]);
+
+        for record in &input.records {
+            let source_id_str = record
+                .get(source_var)
+                .and_then(|v| v.as_node_id().map(|s| s.to_string()))
+                .or_else(|| {
+                    let col = format!("{}.__node_id", source_var);
+                    record.get(&col).and_then(|v| v.as_str().map(|s| s.to_string()))
+                })
+                .or_else(|| {
+                    record.get("__node_id").and_then(|v| v.as_str().map(|s| s.to_string()))
+                })
+                .ok_or_else(|| ExecError::Internal(format!("cannot resolve source node from variable '{}'", source_var)))?;
+
+            let target_id_str = record
+                .get(target_var)
+                .and_then(|v| v.as_node_id().map(|s| s.to_string()))
+                .or_else(|| {
+                    let col = format!("{}.__node_id", target_var);
+                    record.get(&col).and_then(|v| v.as_str().map(|s| s.to_string()))
+                })
+                .ok_or_else(|| ExecError::Internal(format!("cannot resolve target node from variable '{}'", target_var)))?;
+
+            let source_uuid = Uuid::parse_str(&source_id_str)
+                .map_err(|e| ExecError::Internal(format!("invalid source UUID: {}", e)))?;
+            let target_uuid = Uuid::parse_str(&target_id_str)
+                .map_err(|e| ExecError::Internal(format!("invalid target UUID: {}", e)))?;
+
+            let mut edge = Edge::new(
+                ctx.graph_id,
+                NodeId(source_uuid),
+                NodeId(target_uuid),
+                label,
+            );
+            for (key, expr) in properties {
+                let val = evaluate(expr, &dummy)?;
+                edge.set_property(key.clone(), val);
+            }
+            ctx.storage.put_edge(&edge)?;
+            rs.add_record(vec![Value::String(edge.id.0.to_string())]);
+        }
         Ok(rs)
     }
 }

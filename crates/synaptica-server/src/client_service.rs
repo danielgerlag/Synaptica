@@ -111,7 +111,7 @@ impl SynapticaService for SynapticaServiceImpl {
         QUERIES_TOTAL.with_label_values(&["success"]).inc();
         ACTIVE_CONNECTIONS.dec();
 
-        let elapsed_ms = elapsed.as_millis() as i64;
+        let elapsed_ms = std::cmp::max(1, elapsed.as_millis() as i64);
         let rows_returned = result_set.records.len() as i64;
 
         tracing::info!(
@@ -467,6 +467,28 @@ fn value_to_proto(value: &Value) -> GqlValue {
                 .map(|(k, v)| (k.clone(), value_to_proto(v)))
                 .collect();
             Some(gql_value::Kind::MapValue(GqlMap { entries }))
+        }
+        Value::Node { id, labels, properties } => {
+            let proto_props = properties.iter()
+                .map(|(k, v)| (k.clone(), value_to_proto(v)))
+                .collect();
+            Some(gql_value::Kind::NodeValue(proto::GqlNode {
+                id: id.clone(),
+                labels: labels.clone(),
+                properties: proto_props,
+            }))
+        }
+        Value::Edge { id, label, source_id, target_id, properties } => {
+            let proto_props = properties.iter()
+                .map(|(k, v)| (k.clone(), value_to_proto(v)))
+                .collect();
+            Some(gql_value::Kind::EdgeValue(proto::GqlEdge {
+                id: id.clone(),
+                label: label.clone(),
+                source_id: source_id.clone(),
+                target_id: target_id.clone(),
+                properties: proto_props,
+            }))
         }
         // Date/Time/Timestamp/Duration → string representation
         _ => Some(gql_value::Kind::StringValue(format!("{}", value))),

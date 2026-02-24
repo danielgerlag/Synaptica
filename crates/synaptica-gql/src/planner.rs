@@ -28,6 +28,7 @@ pub enum LogicalPlan {
     Scan {
         labels: Vec<String>,
         graph_id: Option<String>,
+        variable: Option<String>,
     },
     /// Apply a predicate filter.
     Filter {
@@ -102,6 +103,14 @@ pub enum LogicalPlan {
     },
     /// An empty result set (identity for unions, etc.).
     Empty,
+    /// Create edges from MATCH results, referencing bound variables.
+    CreateEdgeFromMatch {
+        input: Box<LogicalPlan>,
+        source_var: String,
+        target_var: String,
+        label: String,
+        properties: Vec<(String, Expression)>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -155,9 +164,17 @@ impl QueryPlanner {
                         .flatten()
                         .collect();
 
+                    let variable = path.elements.iter()
+                        .filter_map(|e| match e {
+                            crate::ast::PatternElement::Node(n) => n.variable.clone(),
+                            _ => None,
+                        })
+                        .next();
+
                     scans.push(LogicalPlan::Scan {
                         labels,
                         graph_id: m.graph.clone(),
+                        variable,
                     });
                 }
 
@@ -222,22 +239,59 @@ impl QueryPlanner {
                 Ok(plan)
             }
             GqlStatement::Insert(ins) => {
-                let node = ins
-                    .patterns
-                    .iter()
-                    .flat_map(|p| p.elements.iter())
-                    .filter_map(|e| match e {
-                        crate::ast::PatternElement::Node(n) => Some(n),
+                let has_edges = ins.patterns.iter().any(|p|
+                    p.elements.iter().any(|e| matches!(e, crate::ast::PatternElement::Edge(_)))
+                );
+
+                if has_edges && input.is_some() {
+                    let base = input.unwrap();
+                    let elements: Vec<_> = ins.patterns.iter()
+                        .flat_map(|p| p.elements.iter())
+                        .collect();
+
+                    let source_var = elements.iter().find_map(|e| match e {
+                        crate::ast::PatternElement::Node(n) => n.variable.clone(),
                         _ => None,
+                    }).ok_or(PlanError::Internal("edge INSERT requires source node variable".into()))?;
+
+                    let edge = elements.iter().find_map(|e| match e {
+                        crate::ast::PatternElement::Edge(ep) => Some(ep),
+                        _ => None,
+                    }).ok_or(PlanError::Internal("edge INSERT requires edge pattern".into()))?;
+
+                    let target_var = elements.iter().filter_map(|e| match e {
+                        crate::ast::PatternElement::Node(n) => n.variable.clone(),
+                        _ => None,
+                    }).nth(1).ok_or(PlanError::Internal("edge INSERT requires target node variable".into()))?;
+
+                    let label = edge.labels.first().cloned()
+                        .ok_or(PlanError::Internal("edge INSERT requires a label".into()))?;
+
+                    Ok(LogicalPlan::CreateEdgeFromMatch {
+                        input: Box::new(base),
+                        source_var,
+                        target_var,
+                        label,
+                        properties: edge.properties.clone(),
                     })
-                    .next()
-                    .ok_or(PlanError::Internal(
-                        "INSERT requires at least one node pattern".into(),
-                    ))?;
-                Ok(LogicalPlan::CreateNode {
-                    labels: node.labels.clone(),
-                    properties: node.properties.clone(),
-                })
+                } else {
+                    let node = ins
+                        .patterns
+                        .iter()
+                        .flat_map(|p| p.elements.iter())
+                        .filter_map(|e| match e {
+                            crate::ast::PatternElement::Node(n) => Some(n),
+                            _ => None,
+                        })
+                        .next()
+                        .ok_or(PlanError::Internal(
+                            "INSERT requires at least one node pattern".into(),
+                        ))?;
+                    Ok(LogicalPlan::CreateNode {
+                        labels: node.labels.clone(),
+                        properties: node.properties.clone(),
+                    })
+                }
             }
             _ => Err(PlanError::UnsupportedStatement),
         }

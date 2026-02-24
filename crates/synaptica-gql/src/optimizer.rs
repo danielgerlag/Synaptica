@@ -112,6 +112,7 @@ mod tests {
                 input: Box::new(LogicalPlan::Scan {
                     labels: vec!["Person".into()],
                     graph_id: None,
+                    variable: None,
                 }),
                 expressions: vec![Expression::Identifier("n".into())],
             }),

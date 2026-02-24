@@ -18,6 +18,18 @@ pub enum Value {
     Duration(Duration),
     List(Vec<Value>),
     Map(BTreeMap<String, Value>),
+    Node {
+        id: String,
+        labels: Vec<String>,
+        properties: BTreeMap<String, Value>,
+    },
+    Edge {
+        id: String,
+        label: String,
+        source_id: String,
+        target_id: String,
+        properties: BTreeMap<String, Value>,
+    },
 }
 
 impl Value {
@@ -35,11 +47,20 @@ impl Value {
             Value::Duration(_) => "DURATION",
             Value::List(_) => "LIST",
             Value::Map(_) => "MAP",
+            Value::Node { .. } => "NODE",
+            Value::Edge { .. } => "EDGE",
         }
     }
 
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
+    }
+
+    pub fn as_node_id(&self) -> Option<&str> {
+        match self {
+            Value::Node { id, .. } => Some(id.as_str()),
+            _ => None,
+        }
     }
 
     pub fn as_bool(&self) -> Option<bool> {
@@ -103,6 +124,37 @@ impl fmt::Display for Value {
                     write!(f, "{}: {}", k, v)?;
                 }
                 write!(f, "}}")
+            }
+            Value::Node { id, labels, properties } => {
+                write!(f, "({}", id)?;
+                for l in labels {
+                    write!(f, ":{}", l)?;
+                }
+                if !properties.is_empty() {
+                    write!(f, " {{")?;
+                    for (i, (k, v)) in properties.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}: {}", k, v)?;
+                    }
+                    write!(f, "}}")?;
+                }
+                write!(f, ")")
+            }
+            Value::Edge { id, label, source_id, target_id, properties } => {
+                write!(f, "({})-[:{}", source_id, label)?;
+                if !properties.is_empty() {
+                    write!(f, " {{")?;
+                    for (i, (k, v)) in properties.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}: {}", k, v)?;
+                    }
+                    write!(f, "}}")?;
+                }
+                write!(f, "]->({})[{}]", target_id, id)
             }
         }
     }

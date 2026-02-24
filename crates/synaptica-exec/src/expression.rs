@@ -27,6 +27,8 @@ pub fn evaluate(expr: &Expression, context: &Record) -> Result<Value, ExecError>
             let obj = evaluate(object, context)?;
             match obj {
                 Value::Map(map) => Ok(map.get(property).cloned().unwrap_or(Value::Null)),
+                Value::Node { properties, .. } => Ok(properties.get(property).cloned().unwrap_or(Value::Null)),
+                Value::Edge { properties, .. } => Ok(properties.get(property).cloned().unwrap_or(Value::Null)),
                 _ => Ok(Value::Null),
             }
         }
