@@ -1,29 +1,68 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { client, type GqlNode, type GqlEdge } from '@/lib/grpc-client'
+import { useAppStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
 import { NodeList } from '@/components/explorer/NodeList'
 import { EdgeList } from '@/components/explorer/EdgeList'
 import { NodeForm } from '@/components/explorer/NodeForm'
 
-const DEMO_NODES = [
-  { id: 'a1b2c3d4', labels: ['Person'], properties: { name: 'Alice', age: 30, email: 'alice@example.com' } },
-  { id: 'e5f6g7h8', labels: ['Person'], properties: { name: 'Bob', age: 25, email: 'bob@example.com' } },
-  { id: 'i9j0k1l2', labels: ['Company'], properties: { name: 'Acme Corp', industry: 'Tech' } },
-]
-
-const DEMO_EDGES = [
-  { id: 'x1y2z3w4', label: 'KNOWS', source: 'a1b2c3d4', target: 'e5f6g7h8', properties: { since: 2020, strength: 0.8 } },
-  { id: 'q5r6s7t8', label: 'WORKS_AT', source: 'a1b2c3d4', target: 'i9j0k1l2', properties: { role: 'Engineer', since: 2019 } },
-  { id: 'u9v0w1x2', label: 'WORKS_AT', source: 'e5f6g7h8', target: 'i9j0k1l2', properties: { role: 'Designer', since: 2021 } },
-]
-
+type NodeData = { id: string; labels: string[]; properties: Record<string, unknown> }
+type EdgeData = { id: string; label: string; source: string; target: string; properties: Record<string, unknown> }
 type Tab = 'nodes' | 'edges'
 
 export function ExplorerPage() {
+  const currentGraph = useAppStore((s) => s.currentGraph)
   const [tab, setTab] = useState<Tab>('nodes')
   const [showForm, setShowForm] = useState(false)
+  const [nodes, setNodes] = useState<NodeData[]>([])
+  const [edges, setEdges] = useState<EdgeData[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string>()
 
-  const nodeLabels = Array.from(new Set(DEMO_NODES.flatMap((n) => n.labels)))
-  const edgeLabels = Array.from(new Set(DEMO_EDGES.map((e) => e.label)))
+  const fetchNodes = useCallback(() => {
+    return client.executeQuery('MATCH (n) RETURN n LIMIT 200', currentGraph)
+      .then((res) => {
+        if (res.error) { setError(res.error); return }
+        const parsed: NodeData[] = []
+        for (const row of res.rows) {
+          const val = row[res.columns[0]] as GqlNode | null
+          if (val && typeof val === 'object' && 'id' in val && 'labels' in val) {
+            parsed.push({ id: val.id, labels: val.labels, properties: val.properties ?? {} })
+          }
+        }
+        setNodes(parsed)
+      })
+  }, [currentGraph])
+
+  const fetchEdges = useCallback(() => {
+    return client.executeQuery('MATCH ()-[r]->() RETURN r LIMIT 200', currentGraph)
+      .then((res) => {
+        if (res.error) { setError(res.error); return }
+        const parsed: EdgeData[] = []
+        for (const row of res.rows) {
+          const val = row[res.columns[0]] as GqlEdge | null
+          if (val && typeof val === 'object' && 'id' in val && 'label' in val) {
+            parsed.push({
+              id: val.id, label: val.label,
+              source: val.sourceId, target: val.targetId,
+              properties: val.properties ?? {},
+            })
+          }
+        }
+        setEdges(parsed)
+      })
+  }, [currentGraph])
+
+  useEffect(() => {
+    setLoading(true)
+    setError(undefined)
+    Promise.all([fetchNodes(), fetchEdges()])
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load data'))
+      .finally(() => setLoading(false))
+  }, [fetchNodes, fetchEdges])
+
+  const nodeLabels = Array.from(new Set(nodes.flatMap((n) => n.labels)))
+  const edgeLabels = Array.from(new Set(edges.map((e) => e.label)))
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -36,6 +75,12 @@ export function ExplorerPage() {
           {tab === 'nodes' ? 'Create Node' : 'Create Edge'}
         </button>
       </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">
+          {error}
+        </div>
+      )}
 
       <div className="flex gap-1 border-b border-border">
         {(['nodes', 'edges'] as const).map((t) => (
@@ -60,8 +105,16 @@ export function ExplorerPage() {
       {showForm && tab === 'nodes' && (
         <NodeForm
           onSave={(data) => {
-            console.log('Create node:', data)
-            setShowForm(false)
+            const labels = data.labels.join(':')
+            const props = data.properties
+              .filter((p) => p.key)
+              .map((p) => `${p.key}: '${p.value}'`)
+              .join(', ')
+            const gql = `INSERT (:${labels} {${props}})`
+            client.executeQuery(gql, currentGraph).then(() => {
+              setShowForm(false)
+              fetchNodes()
+            })
           }}
           onCancel={() => setShowForm(false)}
         />
@@ -78,14 +131,25 @@ export function ExplorerPage() {
         />
       )}
 
-      <div className="rounded-lg border border-border bg-card p-4">
-        {tab === 'nodes' && (
-          <NodeList nodes={DEMO_NODES} availableLabels={nodeLabels} />
-        )}
-        {tab === 'edges' && (
-          <EdgeList edges={DEMO_EDGES} availableLabels={edgeLabels} />
-        )}
-      </div>
+      {loading ? (
+        <div className="flex items-center gap-2 py-12 justify-center text-muted-foreground">
+          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+          Loading…
+        </div>
+      ) : (
+        <div className="rounded-lg border border-border bg-card p-4">
+          {tab === 'nodes' && (
+            nodes.length === 0
+              ? <p className="text-muted-foreground text-sm py-4 text-center">No nodes found. Run INSERT queries or seed demo data from the Schema page.</p>
+              : <NodeList nodes={nodes} availableLabels={nodeLabels} />
+          )}
+          {tab === 'edges' && (
+            edges.length === 0
+              ? <p className="text-muted-foreground text-sm py-4 text-center">No edges found.</p>
+              : <EdgeList edges={edges} availableLabels={edgeLabels} />
+          )}
+        </div>
+      )}
     </div>
   )
 }
