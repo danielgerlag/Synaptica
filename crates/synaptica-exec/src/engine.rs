@@ -3,7 +3,7 @@ use crate::operators::ExecutionContext;
 use crate::result::{Record, ResultSet};
 use synaptica_core::graph::{Edge, GraphId, Label, Node, NodeId};
 use synaptica_core::types::Value;
-use synaptica_gql::ast::Expression;
+use synaptica_gql::ast::{Direction, Expression};
 use synaptica_gql::planner::LogicalPlan;
 use synaptica_storage::engine::StorageEngine;
 use std::cmp::Ordering;
@@ -108,6 +108,17 @@ impl<'a> ExecutionEngine<'a> {
                 self.exec_create_edge_from_match(rs, source_var, target_var, label, properties, ctx)
             }
             LogicalPlan::Empty => Ok(ResultSet::new(vec![])),
+            LogicalPlan::Expand {
+                input,
+                edge_label,
+                direction,
+                target_labels,
+                edge_variable,
+                target_variable,
+            } => {
+                let rs = self.execute_node(input, ctx)?;
+                self.exec_expand(rs, edge_label, direction, target_labels, edge_variable, target_variable, ctx)
+            }
             _ => Err(ExecError::NotImplemented(format!(
                 "{:?}",
                 std::mem::discriminant(plan)
@@ -189,6 +200,146 @@ impl<'a> ExecutionEngine<'a> {
 
             rs.add_record(values);
         }
+        Ok(rs)
+    }
+
+    // -- Expand -------------------------------------------------------------
+
+    fn exec_expand(
+        &self,
+        input: ResultSet,
+        edge_label: &str,
+        direction: &Direction,
+        target_labels: &[String],
+        edge_variable: &Option<String>,
+        target_variable: &Option<String>,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<ResultSet, ExecError> {
+        struct ExpandRow {
+            source_values: Vec<Value>,
+            edge: Edge,
+            target: Node,
+        }
+        let mut expanded: Vec<ExpandRow> = Vec::new();
+
+        let label_filter = if edge_label.is_empty() {
+            None
+        } else {
+            Some(Label::new(edge_label))
+        };
+
+        for record in &input.records {
+            let node_id_str = record
+                .get("__node_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ExecError::Internal("missing __node_id in expand input".into()))?;
+
+            let node_uuid = Uuid::parse_str(node_id_str)
+                .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?;
+            let node_id = NodeId(node_uuid);
+
+            let edges = match direction {
+                Direction::Outgoing => ctx.storage.get_outgoing_edges(&ctx.graph_id, &node_id, label_filter.as_ref())?,
+                Direction::Incoming => ctx.storage.get_incoming_edges(&ctx.graph_id, &node_id, label_filter.as_ref())?,
+                Direction::Undirected => {
+                    let mut edges = ctx.storage.get_outgoing_edges(&ctx.graph_id, &node_id, label_filter.as_ref())?;
+                    edges.extend(ctx.storage.get_incoming_edges(&ctx.graph_id, &node_id, label_filter.as_ref())?);
+                    edges
+                }
+            };
+
+            for edge in edges {
+                // Determine target node based on direction
+                let target_id = match direction {
+                    Direction::Incoming => edge.source,
+                    _ => edge.target,
+                };
+
+                let target = match ctx.storage.get_node(&ctx.graph_id, &target_id) {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+
+                // Filter by target labels if specified
+                if !target_labels.is_empty() {
+                    let has_label = target_labels.iter().any(|l| target.has_label(l));
+                    if !has_label {
+                        continue;
+                    }
+                }
+
+                expanded.push(ExpandRow {
+                    source_values: record.values.clone(),
+                    edge,
+                    target,
+                });
+            }
+        }
+
+        // Collect property keys across all expanded rows
+        let mut target_keys: Vec<String> = Vec::new();
+        let mut edge_keys: Vec<String> = Vec::new();
+        for row in &expanded {
+            for k in row.target.properties.keys() {
+                if !target_keys.contains(k) {
+                    target_keys.push(k.clone());
+                }
+            }
+            for k in row.edge.properties.keys() {
+                if !edge_keys.contains(k) {
+                    edge_keys.push(k.clone());
+                }
+            }
+        }
+
+        // Build output columns
+        let mut columns = input.columns.clone();
+        if let Some(ev) = edge_variable {
+            columns.push(ev.clone());
+            for k in &edge_keys {
+                columns.push(format!("{}.{}", ev, k));
+            }
+        }
+        if let Some(tv) = target_variable {
+            columns.push(tv.clone());
+            for k in &target_keys {
+                columns.push(format!("{}.{}", tv, k));
+            }
+        }
+
+        let mut rs = ResultSet::new(columns);
+
+        for row in &expanded {
+            let mut values = row.source_values.clone();
+
+            if let Some(_ev) = edge_variable {
+                values.push(Value::Edge {
+                    id: row.edge.id.0.to_string(),
+                    label: row.edge.label.0.clone(),
+                    source_id: row.edge.source.0.to_string(),
+                    target_id: row.edge.target.0.to_string(),
+                    properties: row.edge.properties.clone(),
+                });
+                for k in &edge_keys {
+                    values.push(row.edge.properties.get(k).cloned().unwrap_or(Value::Null));
+                }
+            }
+
+            if let Some(_tv) = target_variable {
+                let id_str = row.target.id.0.to_string();
+                values.push(Value::Node {
+                    id: id_str,
+                    labels: row.target.labels.iter().map(|l| l.0.clone()).collect(),
+                    properties: row.target.properties.clone(),
+                });
+                for k in &target_keys {
+                    values.push(row.target.properties.get(k).cloned().unwrap_or(Value::Null));
+                }
+            }
+
+            rs.add_record(values);
+        }
+
         Ok(rs)
     }
 

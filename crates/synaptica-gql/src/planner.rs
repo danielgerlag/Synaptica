@@ -46,6 +46,8 @@ pub enum LogicalPlan {
         edge_label: String,
         direction: Direction,
         target_labels: Vec<String>,
+        edge_variable: Option<String>,
+        target_variable: Option<String>,
     },
     /// Join two plan branches.
     Join {
@@ -152,30 +154,68 @@ impl QueryPlanner {
 
         match stmt {
             GqlStatement::Match(m) => {
-                // Build one Scan per path pattern and combine with Join.
+                // Build one plan per path pattern and combine with Join.
                 let mut scans: Vec<LogicalPlan> = Vec::new();
 
                 for path in &m.pattern.paths {
-                    let labels: Vec<String> = path.elements.iter()
-                        .filter_map(|e| match e {
-                            crate::ast::PatternElement::Node(n) => Some(n.labels.clone()),
-                            _ => None,
-                        })
-                        .flatten()
-                        .collect();
+                    // Check if path has edges (traversal pattern)
+                    let has_edges = path.elements.iter().any(|e| matches!(e, crate::ast::PatternElement::Edge(_)));
 
-                    let variable = path.elements.iter()
-                        .filter_map(|e| match e {
-                            crate::ast::PatternElement::Node(n) => n.variable.clone(),
-                            _ => None,
-                        })
-                        .next();
+                    if has_edges {
+                        // Extract node/edge elements in order
+                        let nodes: Vec<&crate::ast::NodePattern> = path.elements.iter()
+                            .filter_map(|e| match e {
+                                crate::ast::PatternElement::Node(n) => Some(n),
+                                _ => None,
+                            })
+                            .collect();
+                        let edges: Vec<&crate::ast::EdgePattern> = path.elements.iter()
+                            .filter_map(|e| match e {
+                                crate::ast::PatternElement::Edge(e) => Some(e),
+                                _ => None,
+                            })
+                            .collect();
 
-                    scans.push(LogicalPlan::Scan {
-                        labels,
-                        graph_id: m.graph.clone(),
-                        variable,
-                    });
+                        let source_node = nodes.first().ok_or_else(|| PlanError::Internal("edge pattern missing source node".into()))?;
+                        let edge_pat = edges.first().ok_or_else(|| PlanError::Internal("edge pattern missing edge".into()))?;
+                        let target_node = nodes.get(1);
+
+                        let source_scan = LogicalPlan::Scan {
+                            labels: source_node.labels.clone(),
+                            graph_id: m.graph.clone(),
+                            variable: source_node.variable.clone(),
+                        };
+
+                        scans.push(LogicalPlan::Expand {
+                            input: Box::new(source_scan),
+                            edge_label: edge_pat.labels.first().cloned().unwrap_or_default(),
+                            direction: edge_pat.direction.clone(),
+                            target_labels: target_node.map(|n| n.labels.clone()).unwrap_or_default(),
+                            edge_variable: edge_pat.variable.clone(),
+                            target_variable: target_node.and_then(|n| n.variable.clone()),
+                        });
+                    } else {
+                        let labels: Vec<String> = path.elements.iter()
+                            .filter_map(|e| match e {
+                                crate::ast::PatternElement::Node(n) => Some(n.labels.clone()),
+                                _ => None,
+                            })
+                            .flatten()
+                            .collect();
+
+                        let variable = path.elements.iter()
+                            .filter_map(|e| match e {
+                                crate::ast::PatternElement::Node(n) => n.variable.clone(),
+                                _ => None,
+                            })
+                            .next();
+
+                        scans.push(LogicalPlan::Scan {
+                            labels,
+                            graph_id: m.graph.clone(),
+                            variable,
+                        });
+                    }
                 }
 
                 let mut plan = scans.remove(0);
