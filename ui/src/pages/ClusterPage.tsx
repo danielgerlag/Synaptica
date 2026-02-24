@@ -2,16 +2,13 @@ import { useState, useEffect, useCallback } from 'react'
 import { ClusterOverview } from '@/components/cluster/ClusterOverview'
 import { PartitionMap } from '@/components/cluster/PartitionMap'
 
-const DEMO_CLUSTER = {
+// Single-node default — will be replaced by ClusterStatus RPC data
+const SINGLE_NODE_CLUSTER = {
   nodes: [
-    { id: 'node-1', address: '10.0.1.1:9090', role: 'Leader' as const, isHealthy: true },
-    { id: 'node-2', address: '10.0.1.2:9090', role: 'Follower' as const, isHealthy: true },
-    { id: 'node-3', address: '10.0.1.3:9090', role: 'Follower' as const, isHealthy: false },
+    { id: 'local', address: '0.0.0.0:9090', role: 'Leader' as const, isHealthy: true },
   ],
   partitions: [
-    { id: 'p1', rangeStart: '0x00', rangeEnd: '0x55', leader: 'node-1', replicas: ['node-2'] },
-    { id: 'p2', rangeStart: '0x55', rangeEnd: '0xAA', leader: 'node-2', replicas: ['node-1'] },
-    { id: 'p3', rangeStart: '0xAA', rangeEnd: '0xFF', leader: 'node-1', replicas: ['node-3'] },
+    { id: 'p1', rangeStart: '0x00', rangeEnd: '0xFF', leader: 'local', replicas: [] as string[] },
   ],
 }
 
@@ -62,8 +59,8 @@ export function ClusterPage() {
         </div>
       </div>
 
-      <ClusterOverview nodes={DEMO_CLUSTER.nodes} />
-      <PartitionMap partitions={DEMO_CLUSTER.partitions} />
+      <ClusterOverview nodes={SINGLE_NODE_CLUSTER.nodes} />
+      <PartitionMap partitions={SINGLE_NODE_CLUSTER.partitions} />
     </div>
   )
 }
