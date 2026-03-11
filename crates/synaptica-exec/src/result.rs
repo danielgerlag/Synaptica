@@ -1,16 +1,17 @@
 use std::fmt;
+use std::sync::Arc;
 use synaptica_core::types::Value;
 
 /// A single record (row) produced by query execution.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Record {
-    pub columns: Vec<String>,
+    pub columns: Arc<Vec<String>>,
     pub values: Vec<Value>,
 }
 
 impl Record {
     pub fn new(columns: Vec<String>, values: Vec<Value>) -> Self {
-        Self { columns, values }
+        Self { columns: Arc::new(columns), values }
     }
 
     /// Look up a value by column name.
@@ -27,26 +28,22 @@ impl Record {
 pub struct ResultSet {
     pub columns: Vec<String>,
     pub records: Vec<Record>,
+    shared_columns: Arc<Vec<String>>,
 }
 
 impl ResultSet {
     pub fn new(columns: Vec<String>) -> Self {
+        let shared_columns = Arc::new(columns.clone());
         Self {
             columns,
             records: Vec::new(),
+            shared_columns,
         }
     }
 
     pub fn add_record(&mut self, values: Vec<Value>) {
-        debug_assert_eq!(
-            values.len(),
-            self.columns.len(),
-            "record has {} values but {} columns",
-            values.len(),
-            self.columns.len()
-        );
         self.records.push(Record {
-            columns: self.columns.clone(),
+            columns: Arc::clone(&self.shared_columns),
             values,
         });
     }

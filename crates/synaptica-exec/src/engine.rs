@@ -162,14 +162,13 @@ impl<'a> ExecutionEngine<'a> {
         };
 
         // Build a result set with columns: __node_id, __labels, + all property keys
-        let mut all_keys: Vec<String> = Vec::new();
+        let mut key_set: std::collections::HashSet<String> = std::collections::HashSet::new();
         for node in &nodes {
             for key in node.properties.keys() {
-                if !all_keys.contains(key) {
-                    all_keys.push(key.clone());
-                }
+                key_set.insert(key.clone());
             }
         }
+        let all_keys: Vec<String> = key_set.into_iter().collect();
 
         let mut columns = vec!["__node_id".to_string(), "__labels".to_string()];
         columns.extend(all_keys.clone());
@@ -311,20 +310,14 @@ impl<'a> ExecutionEngine<'a> {
         }
 
         // Collect property keys across all expanded rows
-        let mut target_keys: Vec<String> = Vec::new();
-        let mut edge_keys: Vec<String> = Vec::new();
+        let mut target_key_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut edge_key_set: std::collections::HashSet<String> = std::collections::HashSet::new();
         for row in &expanded {
-            for k in row.target.properties.keys() {
-                if !target_keys.contains(k) {
-                    target_keys.push(k.clone());
-                }
-            }
-            for k in row.edge.properties.keys() {
-                if !edge_keys.contains(k) {
-                    edge_keys.push(k.clone());
-                }
-            }
+            target_key_set.extend(row.target.properties.keys().cloned());
+            edge_key_set.extend(row.edge.properties.keys().cloned());
         }
+        let target_keys: Vec<String> = target_key_set.into_iter().collect();
+        let edge_keys: Vec<String> = edge_key_set.into_iter().collect();
 
         // Build output columns
         let mut columns = input.columns.clone();
@@ -441,7 +434,7 @@ impl<'a> ExecutionEngine<'a> {
         // If input is empty (standalone RETURN without MATCH), produce one row
         if input.records.is_empty() && input.columns.is_empty() {
             let mut values = Vec::with_capacity(expressions.len());
-            let empty_record = Record { columns: vec![], values: vec![] };
+            let empty_record = Record::new(vec![], vec![]);
             for expr in expressions {
                 values.push(evaluate(expr, &empty_record)?);
             }
@@ -449,14 +442,23 @@ impl<'a> ExecutionEngine<'a> {
             return Ok(rs);
         }
 
+        // Pre-compute indices for internal columns
+        let internal_col_indices: Vec<Option<usize>> = internal_cols.iter()
+            .map(|ic| input.column_index(ic))
+            .collect();
+
         for record in &input.records {
             let mut values = Vec::with_capacity(expressions.len() + internal_cols.len());
             for expr in expressions {
                 values.push(evaluate(expr, record)?);
             }
-            // Append internal column values
-            for ic in &internal_cols {
-                values.push(record.get(ic).cloned().unwrap_or(Value::Null));
+            // Append internal column values via pre-computed indices
+            for idx in &internal_col_indices {
+                values.push(
+                    idx.and_then(|i| record.values.get(i))
+                       .cloned()
+                       .unwrap_or(Value::Null)
+                );
             }
             rs.add_record(values);
         }
