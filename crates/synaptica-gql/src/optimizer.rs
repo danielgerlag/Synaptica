@@ -43,6 +43,7 @@ impl OptimizerRule for FilterPushdown {
             if let LogicalPlan::Project {
                 input: proj_input,
                 expressions,
+                aliases,
             } = input.as_ref()
             {
                 return Some(LogicalPlan::Project {
@@ -51,6 +52,7 @@ impl OptimizerRule for FilterPushdown {
                         predicate: predicate.clone(),
                     }),
                     expressions: expressions.clone(),
+                    aliases: aliases.clone(),
                 });
             }
         }
@@ -115,6 +117,7 @@ mod tests {
                     variable: None,
                 }),
                 expressions: vec![Expression::Identifier("n".into())],
+                aliases: vec![None],
             }),
             predicate: Expression::Identifier("pred".into()),
         };

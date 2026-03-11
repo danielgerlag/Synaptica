@@ -3,7 +3,7 @@ use crate::operators::ExecutionContext;
 use crate::result::{Record, ResultSet};
 use synaptica_core::graph::{Edge, GraphId, Label, Node, NodeId};
 use synaptica_core::types::Value;
-use synaptica_gql::ast::{Direction, Expression};
+use synaptica_gql::ast::{Direction, Expression, SortDirection};
 use synaptica_gql::planner::LogicalPlan;
 use synaptica_storage::engine::StorageEngine;
 use std::cmp::Ordering;
@@ -79,9 +79,9 @@ impl<'a> ExecutionEngine<'a> {
                 let rs = self.execute_node(input, ctx)?;
                 self.exec_filter(rs, predicate)
             }
-            LogicalPlan::Project { input, expressions } => {
+            LogicalPlan::Project { input, expressions, aliases } => {
                 let rs = self.execute_node(input, ctx)?;
-                self.exec_project(rs, expressions)
+                self.exec_project(rs, expressions, aliases)
             }
             LogicalPlan::Limit {
                 input,
@@ -407,18 +407,25 @@ impl<'a> ExecutionEngine<'a> {
         &self,
         input: ResultSet,
         expressions: &[Expression],
+        aliases: &[Option<String>],
     ) -> Result<ResultSet, ExecError> {
         // Check if any expression contains an aggregate
         let has_agg = expressions.iter().any(|e| Self::contains_aggregate(e));
 
         if has_agg {
-            return self.exec_project_with_aggregation(input, expressions);
+            return self.exec_project_with_aggregation(input, expressions, aliases);
         }
 
         let mut columns: Vec<String> = expressions
             .iter()
             .enumerate()
-            .map(|(i, expr)| expr_column_name(expr, i))
+            .map(|(i, expr)| {
+                if let Some(alias) = aliases.get(i).and_then(|a| a.as_ref()) {
+                    alias.clone()
+                } else {
+                    expr_column_name(expr, i)
+                }
+            })
             .collect();
 
         // Carry through internal columns (__node_id, __labels) when present
@@ -460,6 +467,7 @@ impl<'a> ExecutionEngine<'a> {
         &self,
         input: ResultSet,
         expressions: &[Expression],
+        aliases: &[Option<String>],
     ) -> Result<ResultSet, ExecError> {
         use std::collections::BTreeMap;
         use synaptica_gql::ast::AggregateFunction;
@@ -467,7 +475,13 @@ impl<'a> ExecutionEngine<'a> {
         let columns: Vec<String> = expressions
             .iter()
             .enumerate()
-            .map(|(i, expr)| expr_column_name(expr, i))
+            .map(|(i, expr)| {
+                if let Some(alias) = aliases.get(i).and_then(|a| a.as_ref()) {
+                    alias.clone()
+                } else {
+                    expr_column_name(expr, i)
+                }
+            })
             .collect();
 
         // Separate group-by keys (non-aggregate) and aggregate expressions
@@ -619,15 +633,14 @@ impl<'a> ExecutionEngine<'a> {
     fn exec_sort(
         &self,
         mut input: ResultSet,
-        order_by: &[Expression],
+        order_by: &[(Expression, SortDirection)],
     ) -> Result<ResultSet, ExecError> {
-        // Evaluate sort keys for each record, then sort
         let mut err: Option<ExecError> = None;
         input.records.sort_by(|a, b| {
             if err.is_some() {
                 return Ordering::Equal;
             }
-            for expr in order_by {
+            for (expr, dir) in order_by {
                 let va = match evaluate(expr, a) {
                     Ok(v) => v,
                     Err(e) => {
@@ -644,7 +657,10 @@ impl<'a> ExecutionEngine<'a> {
                 };
                 let ord = cmp_values(&va, &vb);
                 if ord != Ordering::Equal {
-                    return ord;
+                    return match dir {
+                        SortDirection::Desc => ord.reverse(),
+                        SortDirection::Asc => ord,
+                    };
                 }
             }
             Ordering::Equal

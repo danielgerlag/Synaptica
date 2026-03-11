@@ -389,7 +389,7 @@ mod planner_tests {
         let plan = planner.plan(&prog).unwrap();
 
         // Outermost should be Project wrapping a Scan.
-        if let LogicalPlan::Project { input, expressions } = &plan {
+        if let LogicalPlan::Project { input, expressions, .. } = &plan {
             assert_eq!(expressions.len(), 1);
             assert!(matches!(&**input, LogicalPlan::Scan { labels, .. } if labels == &["Person"]));
         } else {

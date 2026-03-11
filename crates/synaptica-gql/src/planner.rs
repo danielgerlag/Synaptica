@@ -3,7 +3,7 @@
 //! Translates a parsed GQL AST into a tree of logical operators that can later
 //! be optimised and executed.
 
-use crate::ast::{Direction, Expression, GqlProgram};
+use crate::ast::{Direction, Expression, GqlProgram, SortDirection};
 
 // ---------------------------------------------------------------------------
 // Error
@@ -39,6 +39,7 @@ pub enum LogicalPlan {
     Project {
         input: Box<LogicalPlan>,
         expressions: Vec<Expression>,
+        aliases: Vec<Option<String>>,
     },
     /// Traverse an edge from the current node set.
     Expand {
@@ -63,7 +64,7 @@ pub enum LogicalPlan {
     /// Sort the result set.
     Sort {
         input: Box<LogicalPlan>,
-        order_by: Vec<Expression>,
+        order_by: Vec<(Expression, SortDirection)>,
     },
     /// Limit (and optionally skip) rows.
     Limit {
@@ -310,10 +311,13 @@ impl QueryPlanner {
                 let base = input.unwrap_or(LogicalPlan::Empty);
                 let exprs: Vec<Expression> =
                     r.items.iter().map(|i| i.expression.clone()).collect();
+                let aliases: Vec<Option<String>> =
+                    r.items.iter().map(|i| i.alias.clone()).collect();
 
                 let mut plan = LogicalPlan::Project {
                     input: Box::new(base),
                     expressions: exprs,
+                    aliases,
                 };
 
                 if r.distinct {
@@ -323,8 +327,8 @@ impl QueryPlanner {
                 }
 
                 if let Some(ref ob) = r.order_by {
-                    let order_exprs: Vec<Expression> =
-                        ob.items.iter().map(|i| i.expression.clone()).collect();
+                    let order_exprs: Vec<(Expression, SortDirection)> =
+                        ob.items.iter().map(|i| (i.expression.clone(), i.direction.clone())).collect();
                     plan = LogicalPlan::Sort {
                         input: Box::new(plan),
                         order_by: order_exprs,
@@ -408,10 +412,13 @@ impl QueryPlanner {
                 let base = input.unwrap_or(LogicalPlan::Empty);
                 let exprs: Vec<Expression> =
                     w.items.iter().map(|i| i.expression.clone()).collect();
+                let aliases: Vec<Option<String>> =
+                    w.items.iter().map(|i| i.alias.clone()).collect();
 
                 let mut plan = LogicalPlan::Project {
                     input: Box::new(base),
                     expressions: exprs,
+                    aliases,
                 };
 
                 if w.distinct {
@@ -428,8 +435,8 @@ impl QueryPlanner {
                 }
 
                 if let Some(ref ob) = w.order_by {
-                    let order_exprs: Vec<Expression> =
-                        ob.items.iter().map(|i| i.expression.clone()).collect();
+                    let order_exprs: Vec<(Expression, SortDirection)> =
+                        ob.items.iter().map(|i| (i.expression.clone(), i.direction.clone())).collect();
                     plan = LogicalPlan::Sort {
                         input: Box::new(plan),
                         order_by: order_exprs,
