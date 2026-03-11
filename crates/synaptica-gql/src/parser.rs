@@ -148,6 +148,84 @@ impl Parser {
         }
     }
 
+    /// Accept an identifier or a keyword token as a property/field name.
+    /// GQL allows reserved words in property positions (e.g. `n.offset`, `{value: 1}`).
+    fn expect_ident_or_keyword(&mut self) -> Result<String, ParseError> {
+        if let Token::Ident(name) = self.peek().clone() {
+            self.advance();
+            return Ok(name);
+        }
+        // Map keyword tokens to their lowercase string form
+        let name = match self.peek() {
+            Token::Match => "match",
+            Token::Return => "return",
+            Token::Where => "where",
+            Token::Insert => "insert",
+            Token::Create => "create",
+            Token::Set => "set",
+            Token::Delete => "delete",
+            Token::Detach => "detach",
+            Token::Remove => "remove",
+            Token::Drop => "drop",
+            Token::With => "with",
+            Token::Order => "order",
+            Token::By => "by",
+            Token::Limit => "limit",
+            Token::Offset => "offset",
+            Token::Asc => "asc",
+            Token::Desc => "desc",
+            Token::Distinct => "distinct",
+            Token::As => "as",
+            Token::And => "and",
+            Token::Or => "or",
+            Token::Not => "not",
+            Token::Xor => "xor",
+            Token::Is => "is",
+            Token::Null => "null",
+            Token::True => "true",
+            Token::False => "false",
+            Token::In => "in",
+            Token::Exists => "exists",
+            Token::Case => "case",
+            Token::When => "when",
+            Token::Then => "then",
+            Token::Else => "else",
+            Token::End => "end",
+            Token::Union => "union",
+            Token::All => "all",
+            Token::Optional => "optional",
+            Token::Call => "call",
+            Token::Yield => "yield",
+            Token::Like => "like",
+            Token::Node => "node",
+            Token::Edge => "edge",
+            Token::Graph => "graph",
+            Token::Type => "type",
+            Token::Group => "group",
+            Token::Having => "having",
+            Token::Let => "let",
+            Token::For => "for",
+            Token::Filter => "filter",
+            Token::Count => "count",
+            Token::Sum => "sum",
+            Token::Avg => "avg",
+            Token::Min => "min",
+            Token::Max => "max",
+            Token::Collect => "collect",
+            Token::Path => "path",
+            Token::Cost => "cost",
+            Token::From => "from",
+            Token::To => "to",
+            _ => {
+                return Err(self.error(format!(
+                    "expected identifier, found {:?}",
+                    self.peek()
+                )));
+            }
+        };
+        self.advance();
+        Ok(name.to_string())
+    }
     // -- statement parsing -----------------------------------------------
 
     fn parse_statement(&mut self) -> Result<GqlStatement, ParseError> {
@@ -461,7 +539,7 @@ impl Parser {
         let mut expr = Expression::Identifier(name);
         while self.peek() == &Token::Dot {
             self.advance();
-            let prop = self.expect_ident()?;
+            let prop = self.expect_ident_or_keyword()?;
             expr = Expression::PropertyAccess {
                 object: Box::new(expr),
                 property: prop,
@@ -783,12 +861,12 @@ impl Parser {
         self.expect(&Token::LBrace)?;
         let mut props = Vec::new();
         if self.peek() != &Token::RBrace {
-            let key = self.expect_ident()?;
+            let key = self.expect_ident_or_keyword()?;
             self.expect(&Token::Colon)?;
             let value = self.parse_expression()?;
             props.push((key, value));
             while self.match_token(&Token::Comma) {
-                let key = self.expect_ident()?;
+                let key = self.expect_ident_or_keyword()?;
                 self.expect(&Token::Colon)?;
                 let value = self.parse_expression()?;
                 props.push((key, value));
@@ -1075,7 +1153,7 @@ impl Parser {
         let mut expr = self.parse_primary()?;
         while self.peek() == &Token::Dot {
             self.advance();
-            let property = self.expect_ident()?;
+            let property = self.expect_ident_or_keyword()?;
             expr = Expression::PropertyAccess {
                 object: Box::new(expr),
                 property,
