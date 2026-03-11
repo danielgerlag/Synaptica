@@ -519,8 +519,10 @@ impl Parser {
             _ => return Ok(first_stmt),
         };
 
+        self.enter_depth()?;
         let all = self.match_token(&Token::All);
         let right_stmt = self.parse_statement()?;
+        self.exit_depth();
 
         let right = match right_stmt {
             GqlStatement::CompositeQuery(cq) => SetOperand::SetOp(cq.body),
@@ -741,6 +743,9 @@ impl Parser {
         self.advance(); // {
         let min = if let Token::IntegerLit(n) = self.peek().clone() {
             self.advance();
+            if n < 0 {
+                return Err(self.error("quantifier min must be non-negative"));
+            }
             Some(n as u64)
         } else {
             None
@@ -748,6 +753,9 @@ impl Parser {
         let max = if self.match_token(&Token::Comma) {
             if let Token::IntegerLit(n) = self.peek().clone() {
                 self.advance();
+                if n < 0 {
+                    return Err(self.error("quantifier max must be non-negative"));
+                }
                 Some(n as u64)
             } else {
                 None // unbounded
@@ -831,7 +839,7 @@ impl Parser {
     }
 
     fn parse_comparison_expr(&mut self) -> Result<Expression, ParseError> {
-        let mut left = self.parse_addition_expr()?;
+        let mut left = self.parse_concat_expr()?;
         let mut had_comparison = false;
         loop {
             match self.peek() {
@@ -850,7 +858,7 @@ impl Parser {
                         _ => unreachable!(),
                     };
                     self.advance();
-                    let right = self.parse_addition_expr()?;
+                    let right = self.parse_concat_expr()?;
                     left = Expression::BinaryOp {
                         left: Box::new(left),
                         op,
@@ -869,7 +877,7 @@ impl Parser {
                 }
                 Token::In => {
                     self.advance();
-                    let list = self.parse_addition_expr()?;
+                    let list = self.parse_concat_expr()?;
                     left = Expression::In {
                         operand: Box::new(left),
                         list: Box::new(list),
@@ -877,7 +885,7 @@ impl Parser {
                 }
                 Token::Like => {
                     self.advance();
-                    let pattern = self.parse_addition_expr()?;
+                    let pattern = self.parse_concat_expr()?;
                     left = Expression::Like {
                         operand: Box::new(left),
                         pattern: Box::new(pattern),
@@ -885,6 +893,20 @@ impl Parser {
                 }
                 _ => break,
             }
+        }
+        Ok(left)
+    }
+
+    fn parse_concat_expr(&mut self) -> Result<Expression, ParseError> {
+        let mut left = self.parse_addition_expr()?;
+        while self.peek() == &Token::DoublePipe {
+            self.advance();
+            let right = self.parse_addition_expr()?;
+            left = Expression::BinaryOp {
+                left: Box::new(left),
+                op: BinaryOp::Concat,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -908,15 +930,6 @@ impl Parser {
                     left = Expression::BinaryOp {
                         left: Box::new(left),
                         op: BinaryOp::Sub,
-                        right: Box::new(right),
-                    };
-                }
-                Token::DoublePipe => {
-                    self.advance();
-                    let right = self.parse_multiplication_expr()?;
-                    left = Expression::BinaryOp {
-                        left: Box::new(left),
-                        op: BinaryOp::Concat,
                         right: Box::new(right),
                     };
                 }
@@ -1033,9 +1046,11 @@ impl Parser {
                 Ok(Expression::Parameter(name))
             }
             Token::LParen => {
+                self.enter_depth()?;
                 self.advance();
                 let expr = self.parse_expression()?;
                 self.expect(&Token::RParen)?;
+                self.exit_depth();
                 Ok(expr)
             }
             Token::LBracket => {

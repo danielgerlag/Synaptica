@@ -2,7 +2,8 @@ use crate::partition::PartitionId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -138,7 +139,7 @@ impl DistributedTxLog {
         if let Some(ref mut file) = self.wal_file {
             if let Ok(json) = serde_json::to_string(entry) {
                 let _ = writeln!(file, "{}", json);
-                let _ = file.flush();
+                let _ = file.sync_data(); // sync to disk for durability
             }
         }
     }
@@ -226,11 +227,11 @@ impl TwoPhaseCoordinator {
 
     /// Start a new distributed transaction and return its unique ID.
     pub fn begin_distributed_tx(&self) -> DistributedTxId {
-        let mut next = self.next_id.lock().unwrap();
+        let mut next = self.next_id.lock();
         let id = DistributedTxId(format!("dtx-{}", *next));
         *next += 1;
 
-        self.transactions.lock().unwrap().insert(
+        self.transactions.lock().insert(
             id.clone(),
             TxRecord {
                 state: DistributedTxState::Initiated,
@@ -251,7 +252,7 @@ impl TwoPhaseCoordinator {
     ) -> Result<bool, DistributedTxError> {
         // Update state to Preparing
         {
-            let mut txns = self.transactions.lock().unwrap();
+            let mut txns = self.transactions.lock();
             let record = txns
                 .get_mut(tx_id)
                 .ok_or(DistributedTxError::CoordinatorFailed)?;
@@ -268,7 +269,6 @@ impl TwoPhaseCoordinator {
         // WAL: record prepare intent *before* contacting participants
         self.log
             .lock()
-            .unwrap()
             .log_prepare(tx_id, &participant_ids);
 
         // Contact each participant
@@ -291,7 +291,7 @@ impl TwoPhaseCoordinator {
 
         // Transition to Prepared (or stay for abort path)
         {
-            let mut txns = self.transactions.lock().unwrap();
+            let mut txns = self.transactions.lock();
             let record = txns.get_mut(tx_id).unwrap();
             record.state = if all_yes {
                 DistributedTxState::Prepared
@@ -307,7 +307,7 @@ impl TwoPhaseCoordinator {
     pub fn commit(&self, tx_id: &DistributedTxId) -> Result<(), DistributedTxError> {
         let participant_ids: Vec<PartitionId>;
         {
-            let mut txns = self.transactions.lock().unwrap();
+            let mut txns = self.transactions.lock();
             let record = txns
                 .get_mut(tx_id)
                 .ok_or(DistributedTxError::CoordinatorFailed)?;
@@ -322,7 +322,7 @@ impl TwoPhaseCoordinator {
         }
 
         // WAL: record commit decision *before* telling participants
-        self.log.lock().unwrap().log_commit(tx_id);
+        self.log.lock().log_commit(tx_id);
 
         for pid in &participant_ids {
             let handle = self
@@ -334,7 +334,7 @@ impl TwoPhaseCoordinator {
 
         // Transition to Committed
         {
-            let mut txns = self.transactions.lock().unwrap();
+            let mut txns = self.transactions.lock();
             let record = txns.get_mut(tx_id).unwrap();
             record.state = DistributedTxState::Committed;
         }
@@ -345,7 +345,7 @@ impl TwoPhaseCoordinator {
     pub fn abort(&self, tx_id: &DistributedTxId) -> Result<(), DistributedTxError> {
         let participant_ids: Vec<PartitionId>;
         {
-            let mut txns = self.transactions.lock().unwrap();
+            let mut txns = self.transactions.lock();
             let record = txns
                 .get_mut(tx_id)
                 .ok_or(DistributedTxError::CoordinatorFailed)?;
@@ -359,7 +359,7 @@ impl TwoPhaseCoordinator {
         }
 
         // WAL: record abort decision
-        self.log.lock().unwrap().log_abort(tx_id);
+        self.log.lock().log_abort(tx_id);
 
         for pid in &participant_ids {
             if let Some(handle) = self.participants.get(pid) {
@@ -370,7 +370,7 @@ impl TwoPhaseCoordinator {
 
         // Transition to Aborted
         {
-            let mut txns = self.transactions.lock().unwrap();
+            let mut txns = self.transactions.lock();
             let record = txns.get_mut(tx_id).unwrap();
             record.state = DistributedTxState::Aborted;
         }
@@ -382,7 +382,7 @@ impl TwoPhaseCoordinator {
     /// Returns the IDs of transactions that were prepared but neither
     /// committed nor aborted.
     pub fn recover(&self) -> Result<Vec<DistributedTxId>, DistributedTxError> {
-        let log = self.log.lock().unwrap();
+        let log = self.log.lock();
         Ok(log.in_doubt_transactions())
     }
 
@@ -390,7 +390,6 @@ impl TwoPhaseCoordinator {
     pub fn state(&self, tx_id: &DistributedTxId) -> Option<DistributedTxState> {
         self.transactions
             .lock()
-            .unwrap()
             .get(tx_id)
             .map(|r| r.state.clone())
     }

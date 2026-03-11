@@ -14,6 +14,18 @@ impl AuthInterceptor {
     }
 }
 
+/// Constant-time byte comparison to prevent timing side-channels on token validation.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 impl Interceptor for AuthInterceptor {
     fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
         let config = match &self.config {
@@ -28,7 +40,17 @@ impl Interceptor for AuthInterceptor {
             .and_then(|v| v.strip_prefix("Bearer "));
 
         match token {
-            Some(t) if config.tokens.contains(&t.to_string()) => Ok(request),
+            Some(t) => {
+                let matched = config
+                    .tokens
+                    .iter()
+                    .any(|valid| constant_time_eq(t.as_bytes(), valid.as_bytes()));
+                if matched {
+                    Ok(request)
+                } else {
+                    Err(Status::unauthenticated("invalid or missing bearer token"))
+                }
+            }
             _ => Err(Status::unauthenticated("invalid or missing bearer token")),
         }
     }

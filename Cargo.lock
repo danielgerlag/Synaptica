@@ -2138,6 +2138,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "openraft",
+ "parking_lot",
  "prost",
  "serde",
  "serde_json",

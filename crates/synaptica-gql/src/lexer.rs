@@ -248,7 +248,11 @@ impl Lexer {
     }
 
     fn peek(&self) -> char {
-        self.input[self.pos]
+        if self.pos < self.input.len() {
+            self.input[self.pos]
+        } else {
+            '\0'
+        }
     }
 
     fn peek_at(&self, offset: usize) -> Option<char> {
@@ -256,6 +260,9 @@ impl Lexer {
     }
 
     fn advance(&mut self) -> char {
+        if self.pos >= self.input.len() {
+            return '\0';
+        }
         let ch = self.input[self.pos];
         self.pos += 1;
         if ch == '\n' {

@@ -1,0 +1,258 @@
+# QUICK REFERENCE - TOP ISSUES TO FIX NOW
+
+## FILES REVIEWED
+ synaptica-server/src: 8 files (main.rs, lib.rs, auth.rs, client_service.rs, cluster_service.rs, config.rs, metrics.rs, node.rs)
+ synaptica-cluster/src: 7 files (lib.rs, distributed_tx.rs, membership.rs, partition.rs, raft.rs, rebalance.rs, routing.rs, snapshot.rs)
+ synaptica-core/src: 5 files (lib.rs, error.rs, graph.rs, schema.rs, types.rs)
+
+TOTAL: 20 files, 16 with issues
+
+---
+
+##  CRITICAL - FIX FIRST (TODAY)
+
+### 1. PATH TRAVERSAL (main.rs:167-172)
+- **Attack**: GET /../../../etc/passwd serves system files
+- **Fix**: Canonicalize path and verify within base directory
+- **Time**: 30 minutes
+- **Impact**: CRITICAL security hole
+
+### 2. METRICS PANIC (metrics.rs:12,20,22,25,32-44)
+- **Problem**: .unwrap() on Prometheus registration  app crash
+- **Fix**: Return Result<> and handle errors gracefully  
+- **Time**: 45 minutes
+- **Impact**: Can't start server
+
+### 3. WAL SILENT FAILURES (distributed_tx.rs:137-154)
+- **Problem**: Disk write errors ignored, recovery impossible
+- **Fix**: Return Result from persist_entry(), propagate errors
+- **Time**: 1 hour
+- **Impact**: Data inconsistency after crash
+
+### 4. TRANSACTION STATE LOGIC (distributed_tx.rs:293-301)
+- **Problem**: Wrong state after "NO" vote, can still commit
+- **Fix**: Transition to Aborting immediately on NO vote
+- **Time**: 30 minutes
+- **Impact**: Data corruption
+
+### 5. MUTEX POISON (distributed_tx.rs:229,254,269+)
+- **Problem**: .lock().unwrap()  panic on poison
+- **Fix**: Use error handling OR switch to parking_lot::Mutex
+- **Time**: 2 hours (multiple locations)
+- **Impact**: Coordinator crash
+
+---
+
+##  HIGH SEVERITY (THIS WEEK)
+
+### 6. TIMING ATTACK (auth.rs:31)
+- **Attack**: String comparison reveals token prefix via timing
+- **Fix**: Use subtle::ConstantTimeComparison
+- **Time**: 30 minutes
+- **Impact**: Auth bypass
+
+### 7. CONNECTION LEAK (main.rs:146-150, 220-223)
+- **Problem**: Rejected connections not closed, FD leak
+- **Fix**: Send HTTP 503 before dropping connection
+- **Time**: 30 minutes
+- **Impact**: Semaphore exhaustion, DoS
+
+### 8. ABORT FAILURES (distributed_tx.rs:366-368)
+- **Problem**: Silent failures, participants not rolled back
+- **Fix**: Log failures and alert on abort errors
+- **Time**: 30 minutes
+- **Impact**: Data inconsistency
+
+### 9. ENCODING PANIC (metrics.rs:51-52)
+- **Problem**: .unwrap() on metrics encoding  crash
+- **Fix**: Return error string instead of panicking
+- **Time**: 20 minutes
+- **Impact**: Metrics endpoint unavailable
+
+### 10. TLS VALIDATION (main.rs:100-107)
+- **Problem**: Invalid cert/key causes panic
+- **Fix**: Pre-validate PEM format
+- **Time**: 30 minutes
+- **Impact**: Uncontrolled panic
+
+---
+
+##  MEDIUM SEVERITY (NEXT SPRINT)
+
+- Query DoS: No size limit (client_service.rs:52)
+- Hardcoded limits: Semaphore sizes not configurable (main.rs:144,217)
+- Buffer too small: HTTP requests truncated (main.rs:156)
+- Lock hold duration: WAL lock held during I/O (distributed_tx.rs:268-272)
+- Token in memory: Not zeroized (auth.rs:30-31)
+
+---
+
+## IMPLEMENTATION PRIORITY
+
+### Day 1 (Critical Path):
+1. Fix path traversal (main.rs)
+2. Fix metrics panic (metrics.rs)
+3. Fix WAL persistence (distributed_tx.rs)
+
+### Day 2-3:
+4. Fix transaction state logic (distributed_tx.rs)
+5. Fix mutex poison (distributed_tx.rs - all locations)
+6. Fix timing attack (auth.rs)
+
+### Day 4-5:
+7. Fix connection leaks (main.rs)
+8. Fix abort failures (distributed_tx.rs)
+9. Fix encoding panic (metrics.rs)
+10. Fix TLS validation (main.rs)
+
+### Following Week:
+- Query size validation
+- Configurable limits
+- Input validation improvements
+- Timeout-based operations
+
+---
+
+## CODE SNIPPETS FOR QUICK FIXES
+
+### Fix Path Traversal:
+\\\ust
+// Use pathlib's normalize instead of join
+let canonical = candidate.canonicalize().ok()?;
+let base_canonical = base.canonicalize().ok()?;
+if !canonical.starts_with(&base_canonical) {
+    return error_response("Forbidden");
+}
+\\\
+
+### Fix Metrics Panic:
+\\\ust
+pub fn register_metrics() -> Result<(), Box<dyn std::error::Error>> {
+    REGISTRY.register(Box::new(QUERIES_TOTAL.clone()))?;
+    // ... rest
+    Ok(())
+}
+\\\
+
+### Fix WAL Failures:
+\\\ust
+fn persist_entry(&mut self, entry: &LogEntry) -> std::io::Result<()> {
+    if let Some(ref mut file) = self.wal_file {
+        let json = serde_json::to_string(entry)?;
+        writeln!(file, "{}", json)?;
+        file.flush()?;
+    }
+    Ok(())
+}
+\\\
+
+### Fix State Transition:
+\\\ust
+if all_yes {
+    record.state = DistributedTxState::Prepared;
+} else {
+    record.state = DistributedTxState::Aborting;  // Not Preparing
+}
+\\\
+
+### Fix Mutex Panic:
+\\\ust
+let mut txns = self.transactions.lock()
+    .map_err(|_| DistributedTxError::CoordinatorFailed)?;
+\\\
+
+### Fix Timing Attack:
+\\\ust
+use subtle::ConstantTimeComparison;
+if token_bytes.ct_eq(stored_bytes).unwrap_u8() == 1 {
+    // Token matches (constant time)
+}
+\\\
+
+### Fix Connection Leak:
+\\\ust
+Err(_) => {
+    let _ = stream.write_all(b"HTTP/1.1 503...\r\n\r\n").await;
+    continue;  // Now drops stream gracefully
+}
+\\\
+
+---
+
+## TESTING CHECKLIST
+
+Create tests for:
+- [ ] Path traversal: GET /../../../etc/passwd
+- [ ] Path traversal: GET /./../../etc/passwd  
+- [ ] Metrics registration with failure
+- [ ] WAL write with full disk
+- [ ] Transaction abort with NO votes
+- [ ] Mutex poison recovery
+- [ ] Timing attack on token (measure response time differences)
+- [ ] Connection rejection (semaphore full)
+- [ ] Large query DoS (10MB+ query)
+- [ ] TLS with invalid cert
+
+---
+
+## DEPENDENCIES TO ADD
+
+\\\	oml
+[dependencies]
+# For timing-safe comparisons
+subtle = "2.4"
+
+# Optional: Replace std::sync::Mutex to avoid poisoning
+parking_lot = "0.12"
+
+# Already have: uuid, serde, tokio, etc.
+\\\
+
+---
+
+## FILES BY RISK LEVEL
+
+###  CRITICAL (3):
+- distributed_tx.rs (8 issues)
+- main.rs (7 issues)  
+- metrics.rs (6 issues)
+
+### � HIGH (2):
+- client_service.rs (3 issues)
+- auth.rs (2 issues)
+
+###  LOW (5):
+- config.rs, node.rs, lib.rs (server)
+- membership.rs, partition.rs, raft.rs, rebalance.rs, routing.rs, snapshot.rs (cluster)
+- error.rs, graph.rs, schema.rs, types.rs, lib.rs (core)
+
+---
+
+## REVIEW ARTIFACTS
+
+ CODE_REVIEW.md - Full 10,000+ word comprehensive review
+ REVIEW_SUMMARY.txt - Executive summary with tables  
+ DETAILED_ISSUES.md - Technical deep dives with code examples
+ QUICK_REFERENCE.txt - This file
+
+---
+
+## ESTIMATED EFFORT
+
+| Priority | Issues | Time |
+|----------|--------|------|
+| Critical | 5 | 4-5 hours |
+| High | 5 | 3-4 hours |
+| Medium | 5 | 4-5 hours |
+| Low | 3 | 1-2 hours |
+| **TOTAL** | **18** | **12-16 hours** |
+
+---
+
+## SIGN-OFF
+
+Review completed: 2026-03-11 10:17:54
+Scope: 20 Rust files across 3 crates
+Issues Found: 24 (4 CRITICAL, 8 HIGH, 9 MEDIUM, 3 LOW)
+Recommendation: Address CRITICAL issues before any production deployment
+

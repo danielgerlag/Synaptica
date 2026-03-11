@@ -38,6 +38,13 @@ impl ResultSet {
     }
 
     pub fn add_record(&mut self, values: Vec<Value>) {
+        debug_assert_eq!(
+            values.len(),
+            self.columns.len(),
+            "record has {} values but {} columns",
+            values.len(),
+            self.columns.len()
+        );
         self.records.push(Record {
             columns: self.columns.clone(),
             values,

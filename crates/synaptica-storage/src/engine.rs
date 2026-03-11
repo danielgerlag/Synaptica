@@ -182,13 +182,15 @@ impl StorageEngine {
         // First get the node to know its labels
         let node = self.get_node(graph_id, node_id)?;
 
-        // Collect connected edges to delete
+        // Collect connected edges to delete (deduplicate for self-loops)
         let outgoing = self.get_outgoing_edges(graph_id, node_id, None)?;
         let incoming = self.get_incoming_edges(graph_id, node_id, None)?;
 
-        // Delete all connected edges first
+        let mut seen = std::collections::HashSet::new();
         for edge in outgoing.iter().chain(incoming.iter()) {
-            self.delete_edge(graph_id, &edge.id)?;
+            if seen.insert(edge.id.clone()) {
+                self.delete_edge(graph_id, &edge.id)?;
+            }
         }
 
         let mut batch = WriteBatch::default();

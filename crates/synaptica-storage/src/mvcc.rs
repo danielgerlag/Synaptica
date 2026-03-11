@@ -111,14 +111,15 @@ pub fn extract_key_prefix(versioned_key: &[u8]) -> &[u8] {
     }
 }
 
-/// Tombstone marker: a single zero byte distinguishes deletions from live values.
-/// Live values are stored as-is — the tombstone is a unique 1-byte sentinel that
-/// cannot collide with bincode-serialized data (which always starts with a type tag >= 1 byte).
-const TOMBSTONE: &[u8] = &[0x00];
+/// Tombstone marker for deleted keys.
+/// Uses a zero-length value to represent deletion — this is unambiguous because
+/// bincode-serialized data for Nodes/Edges/GraphMeta always produces > 0 bytes.
+/// Even raw MVCC users would need to explicitly write an empty value to collide.
+const TOMBSTONE: &[u8] = &[];
 
 /// Check if a value is a tombstone (deletion marker).
 pub fn is_tombstone(value: &[u8]) -> bool {
-    value.len() == 1 && value[0] == 0x00
+    value.is_empty()
 }
 
 /// MVCC-aware storage operations on top of a RocksDB instance.
