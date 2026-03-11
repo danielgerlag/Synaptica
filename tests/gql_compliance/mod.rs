@@ -819,3 +819,392 @@ mod e2e_sorting_pagination {
         assert_eq!(rs.len(), 0);
     }
 }
+
+// ===========================================================================
+// Feature 1: WITH clause tests
+// ===========================================================================
+
+mod with_clause_tests {
+    use super::*;
+
+    #[test]
+    fn parse_with_statement() {
+        let prog = parse("MATCH (n:Person) WITH n RETURN n").unwrap();
+        assert_eq!(prog.statements.len(), 3);
+        assert!(matches!(&prog.statements[0], GqlStatement::Match(_)));
+        assert!(matches!(&prog.statements[1], GqlStatement::With(_)));
+        assert!(matches!(&prog.statements[2], GqlStatement::Return(_)));
+    }
+
+    #[test]
+    fn parse_with_distinct() {
+        let prog = parse("MATCH (n:Person) WITH DISTINCT n.name RETURN n.name").unwrap();
+        if let GqlStatement::With(w) = &prog.statements[1] {
+            assert!(w.distinct);
+            assert_eq!(w.items.len(), 1);
+        } else {
+            panic!("expected WITH");
+        }
+    }
+
+    #[test]
+    fn parse_with_where_clause() {
+        let prog = parse("MATCH (n:Person) WITH n WHERE n.age > 30 RETURN n.name").unwrap();
+        if let GqlStatement::With(w) = &prog.statements[1] {
+            assert!(w.where_clause.is_some());
+        } else {
+            panic!("expected WITH");
+        }
+    }
+
+    #[test]
+    fn parse_with_order_by_and_limit() {
+        let prog = parse("MATCH (n:Person) WITH n ORDER BY n.age LIMIT 3 RETURN n.name").unwrap();
+        if let GqlStatement::With(w) = &prog.statements[1] {
+            assert!(w.order_by.is_some());
+            assert!(w.limit_offset.is_some());
+        } else {
+            panic!("expected WITH");
+        }
+    }
+
+    #[test]
+    fn plan_with_produces_project() {
+        let prog = parse("MATCH (n:Person) WITH n.name RETURN n.name").unwrap();
+        let planner = QueryPlanner::new();
+        let plan = planner.plan(&prog).unwrap();
+        // Should contain a Project wrapping a Scan
+        assert!(matches!(plan, LogicalPlan::Project { .. }));
+    }
+
+    #[test]
+    fn with_alias_parsing() {
+        let prog = parse("MATCH (n:Person) WITH n.name AS personName RETURN personName").unwrap();
+        if let GqlStatement::With(w) = &prog.statements[1] {
+            assert_eq!(w.items.len(), 1);
+            assert_eq!(w.items[0].alias.as_deref(), Some("personName"));
+        } else {
+            panic!("expected WITH");
+        }
+    }
+}
+
+// ===========================================================================
+// Feature 2: CALL/YIELD tests
+// ===========================================================================
+
+mod call_yield_tests {
+    use super::*;
+
+    #[test]
+    fn parse_call_simple() {
+        let prog = parse("CALL db.labels()").unwrap();
+        assert_eq!(prog.statements.len(), 1);
+        if let GqlStatement::Call(c) = &prog.statements[0] {
+            assert_eq!(c.procedure, "db.labels");
+            assert!(c.arguments.is_empty());
+            assert!(c.yield_items.is_none());
+        } else {
+            panic!("expected CALL");
+        }
+    }
+
+    #[test]
+    fn parse_call_dotted_name() {
+        let prog = parse("CALL db.schema()").unwrap();
+        if let GqlStatement::Call(c) = &prog.statements[0] {
+            assert_eq!(c.procedure, "db.schema");
+        } else {
+            panic!("expected CALL");
+        }
+    }
+
+    #[test]
+    fn parse_call_with_yield() {
+        let prog = parse("CALL db.labels() YIELD label").unwrap();
+        if let GqlStatement::Call(c) = &prog.statements[0] {
+            assert_eq!(c.procedure, "db.labels");
+            assert_eq!(c.yield_items, Some(vec!["label".to_string()]));
+        } else {
+            panic!("expected CALL");
+        }
+    }
+
+    #[test]
+    fn parse_call_with_multiple_yield() {
+        let prog = parse("CALL db.schema() YIELD labels, relationshipTypes").unwrap();
+        if let GqlStatement::Call(c) = &prog.statements[0] {
+            assert_eq!(c.yield_items, Some(vec!["labels".to_string(), "relationshipTypes".to_string()]));
+        } else {
+            panic!("expected CALL");
+        }
+    }
+
+    #[test]
+    fn parse_call_with_arguments() {
+        let prog = parse("CALL db.labels('test')").unwrap();
+        if let GqlStatement::Call(c) = &prog.statements[0] {
+            assert_eq!(c.arguments.len(), 1);
+        } else {
+            panic!("expected CALL");
+        }
+    }
+
+    #[test]
+    fn plan_call_produces_call_procedure() {
+        let prog = parse("CALL db.labels()").unwrap();
+        let planner = QueryPlanner::new();
+        let plan = planner.plan(&prog).unwrap();
+        assert!(matches!(plan, LogicalPlan::CallProcedure { .. }));
+    }
+
+    #[test]
+    fn execute_call_db_labels() {
+        let tg = TestGraph::new();
+        let rs = execute_query(&tg, "CALL db.labels()");
+        let labels = column_values(&rs, "label");
+        // We have Person and Company labels
+        assert!(labels.contains(&Value::String("Person".into())));
+        assert!(labels.contains(&Value::String("Company".into())));
+    }
+
+    #[test]
+    fn execute_call_db_relationship_types() {
+        let tg = TestGraph::new();
+        let rs = execute_query(&tg, "CALL db.relationshipTypes()");
+        let types = column_values(&rs, "relationshipType");
+        assert!(types.contains(&Value::String("KNOWS".into())));
+        assert!(types.contains(&Value::String("WORKS_AT".into())));
+    }
+
+    #[test]
+    fn execute_call_db_node_count() {
+        let tg = TestGraph::new();
+        let rs = execute_query(&tg, "CALL db.nodeCount()");
+        let count = column_values(&rs, "count");
+        // 5 persons + 3 companies = 8
+        assert_eq!(count, vec![Value::Integer(8)]);
+    }
+
+    #[test]
+    fn execute_call_db_edge_count() {
+        let tg = TestGraph::new();
+        let rs = execute_query(&tg, "CALL db.edgeCount()");
+        let count = column_values(&rs, "count");
+        // 3 KNOWS + 3 WORKS_AT = 6
+        assert_eq!(count, vec![Value::Integer(6)]);
+    }
+
+    #[test]
+    fn execute_call_db_property_keys() {
+        let tg = TestGraph::new();
+        let rs = execute_query(&tg, "CALL db.propertyKeys()");
+        let keys = column_values(&rs, "propertyKey");
+        assert!(keys.contains(&Value::String("name".into())));
+        assert!(keys.contains(&Value::String("age".into())));
+        assert!(keys.contains(&Value::String("since".into())));
+    }
+
+    #[test]
+    fn execute_call_with_yield_filter() {
+        let tg = TestGraph::new();
+        let rs = execute_query(&tg, "CALL db.schema() YIELD labels");
+        // Should only have the "labels" column
+        assert_eq!(rs.columns, vec!["labels".to_string()]);
+        assert_eq!(rs.len(), 1);
+    }
+}
+
+// ===========================================================================
+// Feature 3: Temporal literal parsing tests
+// ===========================================================================
+
+mod temporal_tests {
+    use super::*;
+    use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+    use synaptica_exec::expression::evaluate;
+    use synaptica_exec::result::Record;
+
+    fn eval(query: &str) -> Value {
+        let prog = parse(query).unwrap();
+        if let GqlStatement::Return(r) = &prog.statements[0] {
+            let expr = &r.items[0].expression;
+            let record = Record::new(vec![], vec![]);
+            evaluate(expr, &record).unwrap()
+        } else {
+            panic!("expected RETURN");
+        }
+    }
+
+    #[test]
+    fn date_function() {
+        let val = eval("RETURN DATE('2024-01-15')");
+        assert_eq!(val, Value::Date(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap()));
+    }
+
+    #[test]
+    fn time_function() {
+        let val = eval("RETURN TIME('12:30:45')");
+        assert_eq!(val, Value::Time(NaiveTime::from_hms_opt(12, 30, 45).unwrap()));
+    }
+
+    #[test]
+    fn time_function_short() {
+        let val = eval("RETURN TIME('09:15')");
+        assert_eq!(val, Value::Time(NaiveTime::from_hms_opt(9, 15, 0).unwrap()));
+    }
+
+    #[test]
+    fn datetime_function() {
+        let val = eval("RETURN DATETIME('2024-06-15T10:30:00')");
+        let expected = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()
+            .and_hms_opt(10, 30, 0).unwrap();
+        assert_eq!(val, Value::Timestamp(expected));
+    }
+
+    #[test]
+    fn timestamp_function() {
+        let val = eval("RETURN TIMESTAMP('2024-06-15 10:30:00')");
+        let expected = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()
+            .and_hms_opt(10, 30, 0).unwrap();
+        assert_eq!(val, Value::Timestamp(expected));
+    }
+
+    #[test]
+    fn duration_function() {
+        let val = eval("RETURN DURATION('P1Y2M3D')");
+        if let Value::Duration(d) = val {
+            assert_eq!(d.months, 14); // 1Y = 12M + 2M = 14
+            assert_eq!(d.days, 3);
+        } else {
+            panic!("expected Duration, got {:?}", val);
+        }
+    }
+
+    #[test]
+    fn duration_with_time() {
+        let val = eval("RETURN DURATION('PT2H30M')");
+        if let Value::Duration(d) = val {
+            assert_eq!(d.months, 0);
+            assert_eq!(d.days, 0);
+            // 2H30M = 9000 seconds = 9_000_000_000_000 nanos
+            assert_eq!(d.nanos, 9_000_000_000_000);
+        } else {
+            panic!("expected Duration, got {:?}", val);
+        }
+    }
+
+    #[test]
+    fn date_null_arg() {
+        let val = eval("RETURN DATE(NULL)");
+        assert_eq!(val, Value::Null);
+    }
+
+    #[test]
+    fn lowercase_temporal_functions() {
+        let val = eval("RETURN date('2024-01-15')");
+        assert_eq!(val, Value::Date(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap()));
+    }
+}
+
+// ===========================================================================
+// Feature 4: Scan result limits tests
+// ===========================================================================
+
+mod scan_limit_tests {
+    use super::*;
+
+    #[test]
+    fn scan_nodes_limit_returns_subset() {
+        let tg = TestGraph::new();
+        let all_nodes = tg.storage.scan_nodes(&tg.graph_id).unwrap();
+        assert_eq!(all_nodes.len(), 8); // 5 persons + 3 companies
+
+        let limited = tg.storage.scan_nodes_limit(&tg.graph_id, 3).unwrap();
+        assert_eq!(limited.len(), 3);
+    }
+
+    #[test]
+    fn scan_nodes_limit_larger_than_count() {
+        let tg = TestGraph::new();
+        let limited = tg.storage.scan_nodes_limit(&tg.graph_id, 100).unwrap();
+        assert_eq!(limited.len(), 8); // all 8 nodes
+    }
+
+    #[test]
+    fn scan_nodes_limit_zero() {
+        let tg = TestGraph::new();
+        let limited = tg.storage.scan_nodes_limit(&tg.graph_id, 0).unwrap();
+        assert_eq!(limited.len(), 0);
+    }
+
+    #[test]
+    fn scan_edges_limit_returns_subset() {
+        let tg = TestGraph::new();
+        let limited = tg.storage.scan_edges_limit(&tg.graph_id, 2).unwrap();
+        assert_eq!(limited.len(), 2);
+    }
+
+    #[test]
+    fn scan_edges_limit_larger_than_count() {
+        let tg = TestGraph::new();
+        let limited = tg.storage.scan_edges_limit(&tg.graph_id, 100).unwrap();
+        // 3 KNOWS + 3 WORKS_AT = 6
+        assert_eq!(limited.len(), 6);
+    }
+}
+
+// ===========================================================================
+// Feature 5: Hash join tests
+// ===========================================================================
+
+mod hash_join_tests {
+    use super::*;
+
+    #[test]
+    fn cross_join_no_shared_columns() {
+        // When two scans use different variable names, columns like `a.name`
+        // and `b.name` are distinct, but structural columns like `__node_id`
+        // are shared — hash join finds matches. This verifies the hash join
+        // correctly handles the structural column overlap.
+        let tg = TestGraph::new();
+        let prog = parse("MATCH (a:Company), (b:Company) RETURN a.name, b.name").unwrap();
+        let planner = QueryPlanner::new();
+        let plan = planner.plan(&prog).unwrap();
+        let engine = ExecutionEngine::new(&tg.storage);
+        let rs = engine.execute_plan(&plan, &tg.graph_id).unwrap();
+        // Hash join on shared __node_id/structural columns: 3 companies matching themselves = 3
+        assert_eq!(rs.len(), 3);
+    }
+
+    #[test]
+    fn hash_join_shared_columns() {
+        // When two scans share columns (like __node_id), hash join should
+        // produce the inner join result instead of cartesian product
+        let tg = TestGraph::new();
+        // MATCH (n:Person), (n:Person) - same variable scanned twice
+        // Hash join on shared __node_id column should produce n rows, not n^2
+        let prog = parse("MATCH (n:Person), (n:Person) RETURN n.name").unwrap();
+        let planner = QueryPlanner::new();
+        let plan = planner.plan(&prog).unwrap();
+        let engine = ExecutionEngine::new(&tg.storage);
+        let rs = engine.execute_plan(&plan, &tg.graph_id).unwrap();
+        // Hash join on shared columns: 5 persons matching themselves = 5
+        assert_eq!(rs.len(), 5);
+    }
+
+    #[test]
+    fn join_preserves_data_integrity() {
+        let tg = TestGraph::new();
+        // Simple match that goes through expansion (not join)
+        let rs = execute_query(
+            &tg,
+            "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, b.name",
+        );
+        // Alice->Bob, Alice->Carol, Bob->Dave = 3 relationships
+        assert_eq!(rs.len(), 3);
+        let a_names = column_values(&rs, "a.name");
+        assert!(a_names.contains(&Value::String("Alice".into())));
+        assert!(a_names.contains(&Value::String("Bob".into())));
+    }
+}

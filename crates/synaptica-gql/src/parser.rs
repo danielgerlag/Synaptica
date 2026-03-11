@@ -158,6 +158,8 @@ impl Parser {
                 self.parse_match_statement(true)
             }
             Token::Return => self.parse_return_statement(),
+            Token::With => self.parse_with_statement(),
+            Token::Call => self.parse_call_statement(),
             Token::Insert => self.parse_insert_statement(),
             Token::Set => self.parse_set_statement(),
             Token::Delete => self.parse_delete_statement(),
@@ -236,6 +238,73 @@ impl Parser {
         });
 
         self.maybe_parse_composite(stmt)
+    }
+
+    fn parse_with_statement(&mut self) -> Result<GqlStatement, ParseError> {
+        self.expect(&Token::With)?;
+        let distinct = self.match_token(&Token::Distinct);
+        let items = self.parse_return_items()?;
+
+        let where_clause = if self.peek() == &Token::Where {
+            Some(self.parse_where_clause()?)
+        } else {
+            None
+        };
+
+        let order_by = if self.peek() == &Token::Order {
+            Some(self.parse_order_by_clause()?)
+        } else {
+            None
+        };
+
+        let limit_offset = self.parse_limit_offset()?;
+
+        Ok(GqlStatement::With(WithStatement {
+            distinct,
+            items,
+            where_clause,
+            order_by,
+            limit_offset,
+        }))
+    }
+
+    fn parse_call_statement(&mut self) -> Result<GqlStatement, ParseError> {
+        self.expect(&Token::Call)?;
+        let mut name = self.expect_ident()?;
+        // Handle dotted names like db.labels
+        while self.match_token(&Token::Dot) {
+            let part = self.expect_ident()?;
+            name = format!("{}.{}", name, part);
+        }
+        // Parse arguments
+        let arguments = if self.match_token(&Token::LParen) {
+            let mut args = Vec::new();
+            if self.peek() != &Token::RParen {
+                args.push(self.parse_expression()?);
+                while self.match_token(&Token::Comma) {
+                    args.push(self.parse_expression()?);
+                }
+            }
+            self.expect(&Token::RParen)?;
+            args
+        } else {
+            Vec::new()
+        };
+        // Parse YIELD
+        let yield_items = if self.match_token(&Token::Yield) {
+            let mut items = vec![self.expect_ident()?];
+            while self.match_token(&Token::Comma) {
+                items.push(self.expect_ident()?);
+            }
+            Some(items)
+        } else {
+            None
+        };
+        Ok(GqlStatement::Call(CallStatement {
+            procedure: name,
+            arguments,
+            yield_items,
+        }))
     }
 
     fn parse_insert_statement(&mut self) -> Result<GqlStatement, ParseError> {

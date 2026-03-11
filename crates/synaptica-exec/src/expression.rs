@@ -1,5 +1,6 @@
 use crate::engine::ExecError;
 use crate::result::Record;
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use synaptica_core::types::Value;
 use synaptica_gql::ast::{AggregateFunction, BinaryOp, Expression, Literal, UnaryOp};
 
@@ -424,8 +425,138 @@ fn eval_function(name: &str, args: &[Value]) -> Result<Value, ExecError> {
                 _ => Ok(v.clone()),
             }
         }
+        "date" => {
+            let v = args.first().unwrap_or(&Value::Null);
+            match v {
+                Value::String(s) => {
+                    let d = NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                        .map_err(|e| ExecError::TypeError(format!("invalid date '{}': {}", s, e)))?;
+                    Ok(Value::Date(d))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(ExecError::TypeError(format!(
+                    "DATE() expects a string, got {}",
+                    v.type_name()
+                ))),
+            }
+        }
+        "time" => {
+            let v = args.first().unwrap_or(&Value::Null);
+            match v {
+                Value::String(s) => {
+                    let t = NaiveTime::parse_from_str(s, "%H:%M:%S")
+                        .or_else(|_| NaiveTime::parse_from_str(s, "%H:%M"))
+                        .map_err(|e| ExecError::TypeError(format!("invalid time '{}': {}", s, e)))?;
+                    Ok(Value::Time(t))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(ExecError::TypeError(format!(
+                    "TIME() expects a string, got {}",
+                    v.type_name()
+                ))),
+            }
+        }
+        "datetime" | "timestamp" => {
+            let v = args.first().unwrap_or(&Value::Null);
+            match v {
+                Value::String(s) => {
+                    let dt = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+                        .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
+                        .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M"))
+                        .map_err(|e| ExecError::TypeError(format!("invalid datetime '{}': {}", s, e)))?;
+                    Ok(Value::Timestamp(dt))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(ExecError::TypeError(format!(
+                    "DATETIME() expects a string, got {}",
+                    v.type_name()
+                ))),
+            }
+        }
+        "duration" => {
+            let v = args.first().unwrap_or(&Value::Null);
+            match v {
+                Value::String(s) => {
+                    let dur = parse_iso_duration(s)
+                        .map_err(|e| ExecError::TypeError(format!("invalid duration '{}': {}", s, e)))?;
+                    Ok(Value::Duration(dur))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(ExecError::TypeError(format!(
+                    "DURATION() expects a string, got {}",
+                    v.type_name()
+                ))),
+            }
+        }
         _ => Err(ExecError::NotImplemented(format!("function: {}", name))),
     }
+}
+
+/// Parse an ISO 8601 duration string like "P1Y2M3DT4H5M6S" into a Duration.
+fn parse_iso_duration(s: &str) -> Result<synaptica_core::types::Duration, String> {
+    let s = s.trim();
+    if !s.starts_with('P') {
+        return Err("duration must start with 'P'".to_string());
+    }
+    let rest = &s[1..];
+    let mut months: i32 = 0;
+    let mut days: i32 = 0;
+    let mut nanos: i64 = 0;
+
+    let (date_part, time_part) = if let Some(t_pos) = rest.find('T') {
+        (&rest[..t_pos], Some(&rest[t_pos + 1..]))
+    } else {
+        (rest, None)
+    };
+
+    // Parse date part (Y, M, D)
+    let mut num_buf = String::new();
+    for ch in date_part.chars() {
+        if ch.is_ascii_digit() || ch == '-' {
+            num_buf.push(ch);
+        } else {
+            let n: i32 = num_buf.parse().map_err(|_| format!("invalid number in duration: {}", num_buf))?;
+            num_buf.clear();
+            match ch {
+                'Y' => months += n * 12,
+                'M' => months += n,
+                'D' => days += n,
+                'W' => days += n * 7,
+                _ => return Err(format!("unexpected char '{}' in duration date part", ch)),
+            }
+        }
+    }
+
+    // Parse time part (H, M, S)
+    if let Some(tp) = time_part {
+        num_buf.clear();
+        for ch in tp.chars() {
+            if ch.is_ascii_digit() || ch == '.' || ch == '-' {
+                num_buf.push(ch);
+            } else {
+                match ch {
+                    'H' => {
+                        let n: i64 = num_buf.parse().map_err(|_| format!("invalid hours: {}", num_buf))?;
+                        nanos += n * 3_600_000_000_000;
+                        num_buf.clear();
+                    }
+                    'M' => {
+                        let n: i64 = num_buf.parse().map_err(|_| format!("invalid minutes: {}", num_buf))?;
+                        nanos += n * 60_000_000_000;
+                        num_buf.clear();
+                    }
+                    'S' => {
+                        let n: f64 = num_buf.parse().map_err(|_| format!("invalid seconds: {}", num_buf))?;
+                        nanos += (n * 1_000_000_000.0) as i64;
+                        num_buf.clear();
+                    }
+                    _ => return Err(format!("unexpected char '{}' in duration time part", ch)),
+                }
+            }
+        }
+    }
+
+    Ok(synaptica_core::types::Duration::new(months, days, nanos))
 }
 
 #[cfg(test)]

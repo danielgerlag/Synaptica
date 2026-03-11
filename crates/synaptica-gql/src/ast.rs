@@ -42,6 +42,8 @@ pub enum GqlStatement {
     CreateGraphType(CreateGraphTypeStatement),
     /// `CALL` – invoke a stored procedure.
     Call(CallStatement),
+    /// `WITH` – pipe intermediate results for further processing.
+    With(WithStatement),
     /// Composite query with set operations (UNION, INTERSECT, EXCEPT).
     CompositeQuery(CompositeQueryStatement),
 }
@@ -74,6 +76,21 @@ pub struct ReturnStatement {
     pub group_by: Option<GroupByClause>,
     /// Optional `HAVING`.
     pub having: Option<HavingClause>,
+    /// Optional `ORDER BY`.
+    pub order_by: Option<OrderByClause>,
+    /// Optional `LIMIT` / `OFFSET`.
+    pub limit_offset: Option<LimitOffsetClause>,
+}
+
+/// A `WITH` statement – projects intermediate results for further processing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WithStatement {
+    /// If `true`, `WITH DISTINCT`.
+    pub distinct: bool,
+    /// Items to project; empty means `WITH *`.
+    pub items: Vec<ReturnItem>,
+    /// Optional `WHERE` filter applied after projection.
+    pub where_clause: Option<WhereClause>,
     /// Optional `ORDER BY`.
     pub order_by: Option<OrderByClause>,
     /// Optional `LIMIT` / `OFFSET`.

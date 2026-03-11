@@ -108,6 +108,9 @@ impl<'a> ExecutionEngine<'a> {
                 self.exec_create_edge_from_match(rs, source_var, target_var, label, properties, ctx)
             }
             LogicalPlan::Empty => Ok(ResultSet::new(vec![])),
+            LogicalPlan::CallProcedure { procedure, arguments: _, yield_items } => {
+                self.exec_call_procedure(procedure, yield_items, ctx)
+            }
             LogicalPlan::Expand {
                 input,
                 edge_label,
@@ -492,6 +495,66 @@ impl<'a> ExecutionEngine<'a> {
         left: ResultSet,
         right: ResultSet,
     ) -> Result<ResultSet, ExecError> {
+        // Find shared columns between left and right
+        let shared: Vec<(usize, usize)> = left.columns.iter().enumerate()
+            .filter_map(|(li, lc)| {
+                right.columns.iter().position(|rc| rc == lc).map(|ri| (li, ri))
+            })
+            .collect();
+
+        if shared.is_empty() {
+            return self.exec_cross_join(left, right);
+        }
+
+        // Build output columns: all left + non-shared right
+        let mut columns = left.columns.clone();
+        let right_keep: Vec<usize> = (0..right.columns.len())
+            .filter(|ri| !shared.iter().any(|(_, sri)| sri == ri))
+            .collect();
+        for &ri in &right_keep {
+            columns.push(right.columns[ri].clone());
+        }
+
+        let mut rs = ResultSet::new(columns);
+
+        // Build hash map from the right side
+        let mut hash_map: std::collections::HashMap<Vec<u8>, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (idx, record) in right.records.iter().enumerate() {
+            let mut key = Vec::new();
+            for &(_, ri) in &shared {
+                key.extend_from_slice(format!("{:?}", record.values[ri]).as_bytes());
+                key.push(0xFF);
+            }
+            hash_map.entry(key).or_default().push(idx);
+        }
+
+        // Probe with the left side
+        for l_record in &left.records {
+            let mut key = Vec::new();
+            for &(li, _) in &shared {
+                key.extend_from_slice(format!("{:?}", l_record.values[li]).as_bytes());
+                key.push(0xFF);
+            }
+            if let Some(matches) = hash_map.get(&key) {
+                for &r_idx in matches {
+                    let r_record = &right.records[r_idx];
+                    let mut values = l_record.values.clone();
+                    for &ri in &right_keep {
+                        values.push(r_record.values[ri].clone());
+                    }
+                    rs.add_record(values);
+                }
+            }
+        }
+        Ok(rs)
+    }
+
+    fn exec_cross_join(
+        &self,
+        left: ResultSet,
+        right: ResultSet,
+    ) -> Result<ResultSet, ExecError> {
         let mut columns = left.columns.clone();
         columns.extend(right.columns.clone());
         let mut rs = ResultSet::new(columns);
@@ -560,6 +623,138 @@ impl<'a> ExecutionEngine<'a> {
             rs.add_record(vec![Value::String(edge.id.0.to_string())]);
         }
         Ok(rs)
+    }
+
+    // -- CallProcedure ------------------------------------------------------
+
+    fn exec_call_procedure(
+        &self,
+        procedure: &str,
+        yield_items: &Option<Vec<String>>,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<ResultSet, ExecError> {
+        let result = match procedure {
+            "db.labels" => {
+                let nodes = ctx.storage.scan_nodes(&ctx.graph_id)?;
+                let mut labels = std::collections::BTreeSet::new();
+                for node in &nodes {
+                    for label in &node.labels {
+                        labels.insert(label.0.clone());
+                    }
+                }
+                let mut rs = ResultSet::new(vec!["label".to_string()]);
+                for label in labels {
+                    rs.add_record(vec![Value::String(label)]);
+                }
+                rs
+            }
+            "db.relationshipTypes" | "db.edgeTypes" => {
+                let nodes = ctx.storage.scan_nodes(&ctx.graph_id)?;
+                let mut edge_types = std::collections::BTreeSet::new();
+                for node in &nodes {
+                    let node_edges = ctx.storage.get_outgoing_edges(&ctx.graph_id, &node.id, None)?;
+                    for edge in &node_edges {
+                        edge_types.insert(edge.label.0.clone());
+                    }
+                }
+                let mut rs = ResultSet::new(vec!["relationshipType".to_string()]);
+                for t in edge_types {
+                    rs.add_record(vec![Value::String(t)]);
+                }
+                rs
+            }
+            "db.propertyKeys" => {
+                let nodes = ctx.storage.scan_nodes(&ctx.graph_id)?;
+                let mut keys = std::collections::BTreeSet::new();
+                for node in &nodes {
+                    for key in node.properties.keys() {
+                        keys.insert(key.clone());
+                    }
+                    let node_edges = ctx.storage.get_outgoing_edges(&ctx.graph_id, &node.id, None)?;
+                    for edge in &node_edges {
+                        for key in edge.properties.keys() {
+                            keys.insert(key.clone());
+                        }
+                    }
+                }
+                let mut rs = ResultSet::new(vec!["propertyKey".to_string()]);
+                for key in keys {
+                    rs.add_record(vec![Value::String(key)]);
+                }
+                rs
+            }
+            "db.schema" => {
+                let nodes = ctx.storage.scan_nodes(&ctx.graph_id)?;
+                let mut labels = std::collections::BTreeSet::new();
+                let mut edge_types = std::collections::BTreeSet::new();
+                let mut prop_keys = std::collections::BTreeSet::new();
+                for node in &nodes {
+                    for label in &node.labels {
+                        labels.insert(label.0.clone());
+                    }
+                    for key in node.properties.keys() {
+                        prop_keys.insert(key.clone());
+                    }
+                    let node_edges = ctx.storage.get_outgoing_edges(&ctx.graph_id, &node.id, None)?;
+                    for edge in &node_edges {
+                        edge_types.insert(edge.label.0.clone());
+                        for key in edge.properties.keys() {
+                            prop_keys.insert(key.clone());
+                        }
+                    }
+                }
+                let mut rs = ResultSet::new(vec![
+                    "labels".to_string(),
+                    "relationshipTypes".to_string(),
+                    "propertyKeys".to_string(),
+                ]);
+                let label_list = Value::List(labels.into_iter().map(Value::String).collect());
+                let edge_list = Value::List(edge_types.into_iter().map(Value::String).collect());
+                let prop_list = Value::List(prop_keys.into_iter().map(Value::String).collect());
+                rs.add_record(vec![label_list, edge_list, prop_list]);
+                rs
+            }
+            "db.nodeCount" => {
+                let nodes = ctx.storage.scan_nodes(&ctx.graph_id)?;
+                let mut rs = ResultSet::new(vec!["count".to_string()]);
+                rs.add_record(vec![Value::Integer(nodes.len() as i64)]);
+                rs
+            }
+            "db.edgeCount" => {
+                let nodes = ctx.storage.scan_nodes(&ctx.graph_id)?;
+                let mut count: i64 = 0;
+                for node in &nodes {
+                    let edges = ctx.storage.get_outgoing_edges(&ctx.graph_id, &node.id, None)?;
+                    count += edges.len() as i64;
+                }
+                let mut rs = ResultSet::new(vec!["count".to_string()]);
+                rs.add_record(vec![Value::Integer(count)]);
+                rs
+            }
+            _ => {
+                return Err(ExecError::NotImplemented(format!("procedure: {}", procedure)));
+            }
+        };
+
+        // If yield_items is specified, filter columns to only include those
+        if let Some(items) = yield_items {
+            let mut filtered_rs = ResultSet::new(items.clone());
+            let col_indices: Vec<Option<usize>> = items.iter()
+                .map(|name| result.column_index(name))
+                .collect();
+            for record in &result.records {
+                let values: Vec<Value> = col_indices.iter()
+                    .map(|idx| match idx {
+                        Some(i) => record.values[*i].clone(),
+                        None => Value::Null,
+                    })
+                    .collect();
+                filtered_rs.add_record(values);
+            }
+            Ok(filtered_rs)
+        } else {
+            Ok(result)
+        }
     }
 }
 

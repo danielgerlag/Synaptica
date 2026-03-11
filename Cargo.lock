@@ -2109,6 +2109,7 @@ dependencies = [
 name = "synaptica"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "synaptica-cluster",
  "synaptica-core",
  "synaptica-exec",
@@ -2167,6 +2168,7 @@ dependencies = [
 name = "synaptica-exec"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "synaptica-core",
  "synaptica-gql",
  "synaptica-storage",

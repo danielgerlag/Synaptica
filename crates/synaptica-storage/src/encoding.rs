@@ -72,6 +72,13 @@ pub fn encode_edge_key(graph_id: &GraphId, edge_id: &EdgeId) -> Vec<u8> {
     buf
 }
 
+/// Encode prefix for scanning all edges in a graph.
+pub fn encode_edge_prefix(graph_id: &GraphId) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(UUID_LEN);
+    encode_uuid(graph_id.as_bytes(), &mut buf);
+    buf
+}
+
 /// Decode an edge key back into (GraphId, EdgeId).
 pub fn decode_edge_key(data: &[u8]) -> Option<(GraphId, EdgeId)> {
     if data.len() < UUID_LEN * 2 {

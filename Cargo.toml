@@ -85,6 +85,7 @@ synaptica-storage = { path = "crates/synaptica-storage" }
 synaptica-exec = { path = "crates/synaptica-exec" }
 synaptica-cluster = { path = "crates/synaptica-cluster" }
 tempfile = "3"
+chrono = { workspace = true }
 
 [profile.release]
 opt-level = 3

@@ -103,6 +103,12 @@ pub enum LogicalPlan {
         right: Box<LogicalPlan>,
         all: bool,
     },
+    /// Call a built-in procedure.
+    CallProcedure {
+        procedure: String,
+        arguments: Vec<Expression>,
+        yield_items: Option<Vec<String>>,
+    },
     /// An empty result set (identity for unions, etc.).
     Empty,
     /// Create edges from MATCH results, referencing bound variables.
@@ -332,6 +338,63 @@ impl QueryPlanner {
                         properties: node.properties.clone(),
                     })
                 }
+            }
+            GqlStatement::With(w) => {
+                let base = input.unwrap_or(LogicalPlan::Empty);
+                let exprs: Vec<Expression> =
+                    w.items.iter().map(|i| i.expression.clone()).collect();
+
+                let mut plan = LogicalPlan::Project {
+                    input: Box::new(base),
+                    expressions: exprs,
+                };
+
+                if w.distinct {
+                    plan = LogicalPlan::Distinct {
+                        input: Box::new(plan),
+                    };
+                }
+
+                if let Some(ref wc) = w.where_clause {
+                    plan = LogicalPlan::Filter {
+                        input: Box::new(plan),
+                        predicate: *wc.condition.clone(),
+                    };
+                }
+
+                if let Some(ref ob) = w.order_by {
+                    let order_exprs: Vec<Expression> =
+                        ob.items.iter().map(|i| i.expression.clone()).collect();
+                    plan = LogicalPlan::Sort {
+                        input: Box::new(plan),
+                        order_by: order_exprs,
+                    };
+                }
+
+                if let Some(ref lo) = w.limit_offset {
+                    let count = lo.limit.as_ref().and_then(|e| match e {
+                        Expression::Literal(crate::ast::Literal::Integer(n)) => Some(*n as u64),
+                        _ => None,
+                    });
+                    let offset = lo.offset.as_ref().and_then(|e| match e {
+                        Expression::Literal(crate::ast::Literal::Integer(n)) => Some(*n as u64),
+                        _ => None,
+                    });
+                    plan = LogicalPlan::Limit {
+                        input: Box::new(plan),
+                        count,
+                        offset,
+                    };
+                }
+
+                Ok(plan)
+            }
+            GqlStatement::Call(c) => {
+                Ok(LogicalPlan::CallProcedure {
+                    procedure: c.procedure.clone(),
+                    arguments: c.arguments.clone(),
+                    yield_items: c.yield_items.clone(),
+                })
             }
             _ => Err(PlanError::UnsupportedStatement),
         }

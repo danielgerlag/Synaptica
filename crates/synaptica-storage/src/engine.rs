@@ -258,6 +258,56 @@ impl StorageEngine {
         Ok(nodes)
     }
 
+    /// Scan nodes with a limit on the number of results returned.
+    pub fn scan_nodes_limit(&self, graph_id: &GraphId, limit: usize) -> StorageResult<Vec<Node>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let cf = self.cf(ColumnFamilies::NODES)?;
+        let prefix = encoding::encode_node_prefix(graph_id);
+        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
+
+        let mut nodes = Vec::new();
+        for item in iter {
+            let (key, value) = item?;
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            let node: Node =
+                encoding::deserialize_value(&value).map_err(StorageError::Deserialization)?;
+            nodes.push(node);
+            if nodes.len() >= limit {
+                break;
+            }
+        }
+        Ok(nodes)
+    }
+
+    /// Scan edges with a limit on the number of results returned.
+    pub fn scan_edges_limit(&self, graph_id: &GraphId, limit: usize) -> StorageResult<Vec<Edge>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let cf = self.cf(ColumnFamilies::EDGES)?;
+        let prefix = encoding::encode_edge_prefix(graph_id);
+        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
+
+        let mut edges = Vec::new();
+        for item in iter {
+            let (key, value) = item?;
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            let edge: Edge =
+                encoding::deserialize_value(&value).map_err(StorageError::Deserialization)?;
+            edges.push(edge);
+            if edges.len() >= limit {
+                break;
+            }
+        }
+        Ok(edges)
+    }
+
     // --- Edge Operations ---
 
     /// Insert or update an edge with adjacency indexes.
