@@ -1206,3 +1206,538 @@ mod hash_join_tests {
         assert!(a_names.contains(&Value::String("Bob".into())));
     }
 }
+
+// ===========================================================================
+// Regression tests for bugs fixed during UI scenario testing (S1-S60)
+// ===========================================================================
+
+mod regression_tests {
+    use super::*;
+
+    /// Create an empty test graph (storage + graph meta, no pre-populated data).
+    fn empty_graph() -> TestGraph {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let storage =
+            StorageEngine::open(dir.path(), &StorageConfig::default()).expect("open storage");
+        let graph_id = GraphId::new();
+        let meta = GraphMeta {
+            id: graph_id,
+            name: "test".to_string(),
+            graph_type: None,
+        };
+        storage.put_graph_meta(&meta).unwrap();
+        TestGraph {
+            storage,
+            graph_id,
+            _dir: dir,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #1: Inline property filters not applied
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn inline_property_filter_matches_only_target() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (p:Person {name: 'Alice'}) RETURN p.name, p.age",
+        );
+        assert_eq!(rs.len(), 1);
+        assert_eq!(column_values(&rs, "p.name"), vec![Value::String("Alice".into())]);
+        assert_eq!(column_values(&rs, "p.age"), vec![Value::Integer(30)]);
+    }
+
+    #[test]
+    fn inline_property_filter_no_match() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (p:Person {name: 'NonExistent'}) RETURN p.name",
+        );
+        assert_eq!(rs.len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #3: DELETE statement
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn detach_delete_removes_node() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Temp {val: 'x'})");
+        let rs = execute_query(&tg, "MATCH (t:Temp) RETURN t.val");
+        assert_eq!(rs.len(), 1);
+
+        execute_query(&tg, "MATCH (t:Temp) DETACH DELETE t");
+        let rs2 = execute_query(&tg, "MATCH (t:Temp) RETURN t.val");
+        assert_eq!(rs2.len(), 0);
+    }
+
+    #[test]
+    fn detach_delete_cascades_edges() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'A'})");
+        execute_query(&tg, "INSERT (:Person {name: 'B'})");
+        execute_query(
+            &tg,
+            "MATCH (a:Person {name: 'A'}), (b:Person {name: 'B'}) INSERT (a)-[:KNOWS]->(b)",
+        );
+        let rs = execute_query(
+            &tg,
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name",
+        );
+        assert_eq!(rs.len(), 1);
+
+        execute_query(&tg, "MATCH (a:Person {name: 'A'}) DETACH DELETE a");
+        let rs2 = execute_query(
+            &tg,
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name",
+        );
+        assert_eq!(rs2.len(), 0);
+        // B still exists
+        let rs3 = execute_query(&tg, "MATCH (p:Person) RETURN p.name");
+        assert_eq!(rs3.len(), 1);
+        assert_eq!(column_values(&rs3, "p.name"), vec![Value::String("B".into())]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #4: SET statement
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_property_on_existing_node() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'Zara', age: 22})");
+        execute_query(&tg, "MATCH (p:Person {name: 'Zara'}) SET p.age = 23");
+        let rs = execute_query(&tg, "MATCH (p:Person {name: 'Zara'}) RETURN p.age");
+        assert_eq!(rs.len(), 1);
+        assert_eq!(column_values(&rs, "p.age"), vec![Value::Integer(23)]);
+    }
+
+    #[test]
+    fn set_new_property() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'Zara'})");
+        execute_query(&tg, "MATCH (p:Person {name: 'Zara'}) SET p.hobby = 'painting'");
+        let rs = execute_query(&tg, "MATCH (p:Person {name: 'Zara'}) RETURN p.hobby");
+        assert_eq!(rs.len(), 1);
+        assert_eq!(
+            column_values(&rs, "p.hobby"),
+            vec![Value::String("painting".into())]
+        );
+    }
+
+    #[test]
+    fn set_property_to_zero() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'Zara', score: 100})");
+        execute_query(&tg, "MATCH (p:Person {name: 'Zara'}) SET p.score = 0");
+        let rs = execute_query(&tg, "MATCH (p:Person {name: 'Zara'}) RETURN p.score");
+        assert_eq!(column_values(&rs, "p.score"), vec![Value::Integer(0)]);
+    }
+
+    #[test]
+    fn set_only_filtered_node() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'A', city: 'NYC'})");
+        execute_query(&tg, "INSERT (:Person {name: 'B', city: 'LA'})");
+        execute_query(
+            &tg,
+            "MATCH (p:Person) WHERE p.city = 'NYC' SET p.tag = 'east'",
+        );
+        let rs_a = execute_query(&tg, "MATCH (p:Person {name: 'A'}) RETURN p.tag");
+        assert_eq!(
+            column_values(&rs_a, "p.tag"),
+            vec![Value::String("east".into())]
+        );
+        let rs_b = execute_query(&tg, "MATCH (p:Person {name: 'B'}) RETURN p.tag");
+        assert_eq!(column_values(&rs_b, "p.tag"), vec![Value::Null]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #5: DISTINCT
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn distinct_removes_duplicates() {
+        let tg = TestGraph::new();
+        // All KNOWS edges: Alice->Bob, Alice->Carol, Bob->Dave
+        // Source names: Alice, Alice, Bob — with DISTINCT: Alice, Bob
+        let rs = execute_query(
+            &tg,
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN DISTINCT a.name",
+        );
+        assert_eq!(rs.len(), 2);
+        let names = column_values(&rs, "a.name");
+        assert!(names.contains(&Value::String("Alice".into())));
+        assert!(names.contains(&Value::String("Bob".into())));
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #6: Multi-hop traversal
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn two_hop_traversal() {
+        let tg = TestGraph::new();
+        // Alice->Bob->Dave
+        let rs = execute_query(
+            &tg,
+            "MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN a.name, b.name, c.name",
+        );
+        assert_eq!(rs.len(), 1);
+        assert_eq!(column_values(&rs, "a.name"), vec![Value::String("Alice".into())]);
+        assert_eq!(column_values(&rs, "b.name"), vec![Value::String("Bob".into())]);
+        assert_eq!(column_values(&rs, "c.name"), vec![Value::String("Dave".into())]);
+    }
+
+    #[test]
+    fn two_hop_from_any_source() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN a.name, c.name",
+        );
+        assert_eq!(rs.len(), 1);
+        assert_eq!(column_values(&rs, "a.name"), vec![Value::String("Alice".into())]);
+        assert_eq!(column_values(&rs, "c.name"), vec![Value::String("Dave".into())]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #8: Aggregation (COUNT, SUM, AVG, MIN, MAX, COLLECT)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn count_aggregation() {
+        let tg = TestGraph::new();
+        let rs = execute_query(&tg, "MATCH (p:Person) RETURN COUNT(p)");
+        assert_eq!(rs.len(), 1);
+        assert_eq!(rs.records[0].values[0], Value::Integer(5));
+    }
+
+    #[test]
+    fn sum_aggregation() {
+        let tg = TestGraph::new();
+        let rs = execute_query(&tg, "MATCH (p:Person) RETURN SUM(p.age)");
+        assert_eq!(rs.len(), 1);
+        assert_eq!(rs.records[0].values[0], Value::Integer(160));
+    }
+
+    #[test]
+    fn avg_aggregation() {
+        let tg = TestGraph::new();
+        let rs = execute_query(&tg, "MATCH (p:Person) RETURN AVG(p.age)");
+        assert_eq!(rs.len(), 1);
+        assert_eq!(rs.records[0].values[0], Value::Float(32.0));
+    }
+
+    #[test]
+    fn min_aggregation() {
+        let tg = TestGraph::new();
+        let rs = execute_query(&tg, "MATCH (p:Person) RETURN MIN(p.age)");
+        assert_eq!(rs.len(), 1);
+        assert_eq!(rs.records[0].values[0], Value::Integer(25));
+    }
+
+    #[test]
+    fn max_aggregation() {
+        let tg = TestGraph::new();
+        let rs = execute_query(&tg, "MATCH (p:Person) RETURN MAX(p.age)");
+        assert_eq!(rs.len(), 1);
+        assert_eq!(rs.records[0].values[0], Value::Integer(42));
+    }
+
+    #[test]
+    fn collect_aggregation() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:T {v: 1})");
+        execute_query(&tg, "INSERT (:T {v: 2})");
+        execute_query(&tg, "INSERT (:T {v: 3})");
+        let rs = execute_query(&tg, "MATCH (t:T) RETURN COLLECT(t.v)");
+        assert_eq!(rs.len(), 1);
+        if let Value::List(items) = &rs.records[0].values[0] {
+            assert_eq!(items.len(), 3);
+            assert!(items.contains(&Value::Integer(1)));
+            assert!(items.contains(&Value::Integer(2)));
+            assert!(items.contains(&Value::Integer(3)));
+        } else {
+            panic!("expected List, got {:?}", rs.records[0].values[0]);
+        }
+    }
+
+    #[test]
+    fn count_with_group_by() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (a:Person)-[:KNOWS]->(b) RETURN a.name, COUNT(b)",
+        );
+        // Alice->2 (Bob, Carol), Bob->1 (Dave)
+        assert_eq!(rs.len(), 2);
+    }
+
+    #[test]
+    fn multiple_aggregates() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (p:Person) RETURN COUNT(p), SUM(p.age), AVG(p.age)",
+        );
+        assert_eq!(rs.len(), 1);
+        assert_eq!(rs.records[0].values[0], Value::Integer(5));
+        assert_eq!(rs.records[0].values[1], Value::Integer(160));
+        assert_eq!(rs.records[0].values[2], Value::Float(32.0));
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #9: Reserved keywords as property names
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reserved_keyword_as_property_name() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:T {offset: 10, count: 5, type: 'special'})");
+        let rs = execute_query(&tg, "MATCH (t:T) RETURN t.offset, t.count, t.type");
+        assert_eq!(rs.len(), 1);
+        assert_eq!(
+            column_values(&rs, "t.offset"),
+            vec![Value::Integer(10)]
+        );
+        assert_eq!(
+            column_values(&rs, "t.count"),
+            vec![Value::Integer(5)]
+        );
+        assert_eq!(
+            column_values(&rs, "t.type"),
+            vec![Value::String("special".into())]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #10: ORDER BY DESC
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn order_by_desc() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (p:Person) RETURN p.name, p.age ORDER BY p.age DESC",
+        );
+        assert_eq!(rs.len(), 5);
+        let ages = column_values(&rs, "p.age");
+        assert_eq!(ages[0], Value::Integer(42)); // Dave
+        assert_eq!(ages[1], Value::Integer(35)); // Bob
+        assert_eq!(ages[2], Value::Integer(30)); // Alice
+        assert_eq!(ages[3], Value::Integer(28)); // Carol
+        assert_eq!(ages[4], Value::Integer(25)); // Eve
+    }
+
+    #[test]
+    fn order_by_desc_with_limit() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (p:Person) RETURN p.name, p.age ORDER BY p.age DESC LIMIT 2",
+        );
+        assert_eq!(rs.len(), 2);
+        let names = column_values(&rs, "p.name");
+        assert_eq!(names[0], Value::String("Dave".into()));
+        assert_eq!(names[1], Value::String("Bob".into()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #11: WITH/RETURN aliases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn return_alias_as_column_name() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (p:Person {name: 'Alice'}) RETURN p.name AS person_name, p.age AS person_age",
+        );
+        assert_eq!(rs.len(), 1);
+        assert!(rs.columns.contains(&"person_name".to_string()));
+        assert!(rs.columns.contains(&"person_age".to_string()));
+        assert_eq!(
+            column_values(&rs, "person_name"),
+            vec![Value::String("Alice".into())]
+        );
+        assert_eq!(column_values(&rs, "person_age"), vec![Value::Integer(30)]);
+    }
+
+    #[test]
+    fn with_alias_carries_through() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (p:Person) WITH p.name AS nm RETURN nm",
+        );
+        assert_eq!(rs.len(), 5);
+        assert!(rs.columns.contains(&"nm".to_string()));
+        let nms = column_values(&rs, "nm");
+        assert!(nms.contains(&Value::String("Alice".into())));
+    }
+
+    #[test]
+    fn with_aggregation_alias() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'A', city: 'NYC'})");
+        execute_query(&tg, "INSERT (:Person {name: 'B', city: 'NYC'})");
+        execute_query(&tg, "INSERT (:Person {name: 'C', city: 'LA'})");
+        let rs = execute_query(
+            &tg,
+            "MATCH (p:Person) WITH p.city AS city, COUNT(p) AS cnt RETURN city, cnt ORDER BY cnt DESC",
+        );
+        assert_eq!(rs.len(), 2);
+        assert!(rs.columns.contains(&"city".to_string()));
+        assert!(rs.columns.contains(&"cnt".to_string()));
+        let cities = column_values(&rs, "city");
+        assert_eq!(cities[0], Value::String("NYC".into()));
+        assert_eq!(cities[1], Value::String("LA".into()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Feature: WITH pipeline
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn with_feeds_into_match() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (p:Person {name: 'Alice'}) WITH p MATCH (p)-[:KNOWS]->(f) RETURN f.name",
+        );
+        let names = column_values(&rs, "f.name");
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&Value::String("Bob".into())));
+        assert!(names.contains(&Value::String("Carol".into())));
+    }
+
+    #[test]
+    fn with_order_limit_pipeline() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (p:Person) WITH p ORDER BY p.age LIMIT 3 RETURN p.name, p.age",
+        );
+        assert_eq!(rs.len(), 3);
+        let ages = column_values(&rs, "p.age");
+        assert_eq!(ages[0], Value::Integer(25)); // Eve
+        assert_eq!(ages[1], Value::Integer(28)); // Carol
+        assert_eq!(ages[2], Value::Integer(30)); // Alice
+    }
+
+    #[test]
+    fn full_pipeline_match_where_with_match_return() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (p:Person) WHERE p.age > 30 WITH p MATCH (p)-[:WORKS_AT]->(c:Company) RETURN p.name, c.name ORDER BY p.name",
+        );
+        // Bob(35)->Globex, Dave(42)->Initech
+        assert_eq!(rs.len(), 2);
+        let names = column_values(&rs, "p.name");
+        assert_eq!(names[0], Value::String("Bob".into()));
+        assert_eq!(names[1], Value::String("Dave".into()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Feature: Edge traversal edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn non_existent_edge_label_returns_empty() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (p:Person)-[:LIKES]->(x) RETURN p.name, x.name",
+        );
+        assert_eq!(rs.len(), 0);
+    }
+
+    #[test]
+    fn self_loop_traversal() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'Alice'})");
+        execute_query(
+            &tg,
+            "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Alice'}) INSERT (a)-[:MENTORS]->(b)",
+        );
+        let rs = execute_query(
+            &tg,
+            "MATCH (a:Person)-[:MENTORS]->(b:Person) RETURN a.name, b.name",
+        );
+        assert_eq!(rs.len(), 1);
+        assert_eq!(column_values(&rs, "a.name"), vec![Value::String("Alice".into())]);
+        assert_eq!(column_values(&rs, "b.name"), vec![Value::String("Alice".into())]);
+    }
+
+    #[test]
+    fn incoming_edge_traversal() {
+        let tg = TestGraph::new();
+        let rs = execute_query(
+            &tg,
+            "MATCH (b:Person {name: 'Bob'})<-[:KNOWS]-(src) RETURN src.name",
+        );
+        assert_eq!(rs.len(), 1);
+        assert_eq!(
+            column_values(&rs, "src.name"),
+            vec![Value::String("Alice".into())]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Feature: Data type edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn unicode_property_values() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:T {jp: '東京タワー', emoji: '🚀🎯'})");
+        let rs = execute_query(&tg, "MATCH (t:T) RETURN t.jp, t.emoji");
+        assert_eq!(rs.len(), 1);
+        assert_eq!(
+            column_values(&rs, "t.jp"),
+            vec![Value::String("東京タワー".into())]
+        );
+        assert_eq!(
+            column_values(&rs, "t.emoji"),
+            vec![Value::String("🚀🎯".into())]
+        );
+    }
+
+    #[test]
+    fn float_precision() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:T {v: 3.14159265358979})");
+        let rs = execute_query(&tg, "MATCH (t:T) RETURN t.v");
+        assert_eq!(rs.len(), 1);
+        if let Value::Float(f) = rs.records[0].values[0] {
+            assert!((f - 3.14159265358979).abs() < 1e-10);
+        } else {
+            panic!("expected Float");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Feature: Delete + re-insert
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn delete_then_reinsert() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Temp {val: 'old'})");
+        execute_query(&tg, "MATCH (t:Temp) DETACH DELETE t");
+        execute_query(&tg, "INSERT (:Temp {val: 'new'})");
+        let rs = execute_query(&tg, "MATCH (t:Temp) RETURN t.val");
+        assert_eq!(rs.len(), 1);
+        assert_eq!(
+            column_values(&rs, "t.val"),
+            vec![Value::String("new".into())]
+        );
+    }
+}

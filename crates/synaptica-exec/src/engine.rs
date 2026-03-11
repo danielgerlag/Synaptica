@@ -908,9 +908,18 @@ impl<'a> ExecutionEngine<'a> {
         let mut result = ResultSet::new(rs.columns.clone());
         let mut seen = HashSet::new();
 
+        // Only consider non-internal columns for uniqueness
+        let user_col_indices: Vec<usize> = rs.columns.iter().enumerate()
+            .filter(|(_, c)| !c.starts_with("__"))
+            .map(|(i, _)| i)
+            .collect();
+
         for record in &rs.records {
-            let key = format!("{:?}", &record.values);
-            if seen.insert(key) {
+            let key: Vec<_> = user_col_indices.iter()
+                .map(|&i| format!("{:?}", record.values.get(i).unwrap_or(&Value::Null)))
+                .collect();
+            let key_str = key.join("|");
+            if seen.insert(key_str) {
                 result.add_record(record.values.clone());
             }
         }
