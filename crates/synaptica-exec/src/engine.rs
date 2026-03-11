@@ -122,6 +122,18 @@ impl<'a> ExecutionEngine<'a> {
                 let rs = self.execute_node(input, ctx)?;
                 self.exec_expand(rs, edge_label, direction, target_labels, edge_variable, target_variable, ctx)
             }
+            LogicalPlan::DeleteNode { input } => {
+                let rs = self.execute_node(input, ctx)?;
+                self.exec_delete_nodes(rs, ctx)
+            }
+            LogicalPlan::SetProperty { input, property, value } => {
+                let rs = self.execute_node(input, ctx)?;
+                self.exec_set_property(rs, property, value, ctx)
+            }
+            LogicalPlan::Distinct { input } => {
+                let rs = self.execute_node(input, ctx)?;
+                self.exec_distinct(rs)
+            }
             _ => Err(ExecError::NotImplemented(format!(
                 "{:?}",
                 std::mem::discriminant(plan)
@@ -389,17 +401,29 @@ impl<'a> ExecutionEngine<'a> {
         input: ResultSet,
         expressions: &[Expression],
     ) -> Result<ResultSet, ExecError> {
-        let columns: Vec<String> = expressions
+        let mut columns: Vec<String> = expressions
             .iter()
             .enumerate()
             .map(|(i, expr)| expr_column_name(expr, i))
             .collect();
 
+        // Carry through internal columns (__node_id, __labels) when present
+        // in the input but not explicitly projected — needed for WITH pipelines
+        let internal_cols: Vec<String> = input.columns.iter()
+            .filter(|c| c.starts_with("__") && !columns.contains(c))
+            .cloned()
+            .collect();
+        columns.extend(internal_cols.iter().cloned());
+
         let mut rs = ResultSet::new(columns);
         for record in &input.records {
-            let mut values = Vec::with_capacity(expressions.len());
+            let mut values = Vec::with_capacity(expressions.len() + internal_cols.len());
             for expr in expressions {
                 values.push(evaluate(expr, record)?);
+            }
+            // Append internal column values
+            for ic in &internal_cols {
+                values.push(record.get(ic).cloned().unwrap_or(Value::Null));
             }
             rs.add_record(values);
         }
@@ -495,9 +519,16 @@ impl<'a> ExecutionEngine<'a> {
         left: ResultSet,
         right: ResultSet,
     ) -> Result<ResultSet, ExecError> {
-        // Find shared columns between left and right
+        // Find shared variable-prefixed columns (e.g. "a.name")
+        // Skip bare columns (__node_id, __labels, name, age) as these are
+        // coincidental overlaps between independent pattern scans.
         let shared: Vec<(usize, usize)> = left.columns.iter().enumerate()
             .filter_map(|(li, lc)| {
+                // Only join on variable-prefixed columns (contain a dot)
+                // and skip internal columns
+                if !lc.contains('.') || lc.starts_with("__") {
+                    return None;
+                }
                 right.columns.iter().position(|rc| rc == lc).map(|ri| (li, ri))
             })
             .collect();
@@ -623,6 +654,85 @@ impl<'a> ExecutionEngine<'a> {
             rs.add_record(vec![Value::String(edge.id.0.to_string())]);
         }
         Ok(rs)
+    }
+
+    // -- DeleteNode ----------------------------------------------------------
+
+    fn exec_delete_nodes(
+        &self,
+        rs: ResultSet,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<ResultSet, ExecError> {
+        use std::collections::HashSet;
+        let mut deleted = 0u64;
+        let mut seen = HashSet::new();
+
+        for record in &rs.records {
+            for val in &record.values {
+                if let Value::Node { ref id, .. } = val {
+                    if seen.insert(id.clone()) {
+                        let nid = NodeId(Uuid::parse_str(id)
+                            .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?);
+                        ctx.storage.delete_node(&ctx.graph_id, &nid)
+                            .map_err(|e| ExecError::Internal(e.to_string()))?;
+                        deleted += 1;
+                    }
+                }
+            }
+        }
+
+        let mut result = ResultSet::new(vec!["deleted".to_string()]);
+        result.add_record(vec![Value::Integer(deleted as i64)]);
+        Ok(result)
+    }
+
+    // -- SetProperty ---------------------------------------------------------
+
+    fn exec_set_property(
+        &self,
+        rs: ResultSet,
+        property: &str,
+        value_expr: &Expression,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<ResultSet, ExecError> {
+        let mut modified = 0u64;
+
+        for record in &rs.records {
+            let val = evaluate(value_expr, record)?;
+            for rv in &record.values {
+                if let Value::Node { ref id, .. } = rv {
+                    let nid = NodeId(Uuid::parse_str(id)
+                        .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?);
+                    let mut node = ctx.storage.get_node(&ctx.graph_id, &nid)
+                        .map_err(|e| ExecError::Internal(e.to_string()))?;
+                    node.properties.insert(property.to_string(), val.clone());
+                    ctx.storage.put_node(&node)
+                        .map_err(|e| ExecError::Internal(e.to_string()))?;
+                    modified += 1;
+                }
+            }
+        }
+
+        let mut result = ResultSet::new(vec!["modified".to_string()]);
+        result.add_record(vec![Value::Integer(modified as i64)]);
+        Ok(result)
+    }
+
+    // -- Distinct ------------------------------------------------------------
+
+    fn exec_distinct(&self, rs: ResultSet) -> Result<ResultSet, ExecError> {
+        use std::collections::HashSet;
+        let mut result = ResultSet::new(rs.columns.clone());
+        let mut seen = HashSet::new();
+
+        for record in &rs.records {
+            let key = format!("{:?}", &record.values);
+            if seen.insert(key) {
+                result.add_record(record.values.clone());
+            }
+        }
+
+        Ok(result)
     }
 
     // -- CallProcedure ------------------------------------------------------

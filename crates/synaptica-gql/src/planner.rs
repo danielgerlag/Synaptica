@@ -151,6 +151,32 @@ impl QueryPlanner {
         current.ok_or(PlanError::Internal("empty plan".into()))
     }
 
+    /// Wrap a plan with Filter nodes for inline property constraints like `{name: 'Alice'}`.
+    fn apply_inline_property_filters(
+        &self,
+        mut plan: LogicalPlan,
+        properties: &[(String, Expression)],
+        variable: Option<&str>,
+    ) -> LogicalPlan {
+        for (key, val) in properties {
+            let var = variable.unwrap_or("");
+            let prop_access = Expression::PropertyAccess {
+                object: Box::new(Expression::Identifier(var.to_string())),
+                property: key.clone(),
+            };
+            let predicate = Expression::BinaryOp {
+                left: Box::new(prop_access),
+                op: crate::ast::BinaryOp::Eq,
+                right: Box::new(val.clone()),
+            };
+            plan = LogicalPlan::Filter {
+                input: Box::new(plan),
+                predicate,
+            };
+        }
+        plan
+    }
+
     fn plan_statement(
         &self,
         stmt: &crate::ast::GqlStatement,
@@ -186,11 +212,24 @@ impl QueryPlanner {
                         let edge_pat = edges.first().ok_or_else(|| PlanError::Internal("edge pattern missing edge".into()))?;
                         let target_node = nodes.get(1);
 
-                        let source_scan = LogicalPlan::Scan {
-                            labels: source_node.labels.clone(),
-                            graph_id: m.graph.clone(),
-                            variable: source_node.variable.clone(),
+                        // If we have input from a previous statement (e.g. WITH)
+                        // and the source variable matches, use the input as base
+                        let mut source_scan = if input.is_some() && source_node.variable.is_some() {
+                            input.clone().unwrap()
+                        } else {
+                            LogicalPlan::Scan {
+                                labels: source_node.labels.clone(),
+                                graph_id: m.graph.clone(),
+                                variable: source_node.variable.clone(),
+                            }
                         };
+
+                        // Apply inline property filters on source node pattern
+                        source_scan = self.apply_inline_property_filters(
+                            source_scan,
+                            &source_node.properties,
+                            source_node.variable.as_deref(),
+                        );
 
                         scans.push(LogicalPlan::Expand {
                             input: Box::new(source_scan),
@@ -216,11 +255,34 @@ impl QueryPlanner {
                             })
                             .next();
 
-                        scans.push(LogicalPlan::Scan {
-                            labels,
-                            graph_id: m.graph.clone(),
-                            variable,
-                        });
+                        // Collect inline properties from node patterns
+                        let node_props: Vec<(String, Expression)> = path.elements.iter()
+                            .filter_map(|e| match e {
+                                crate::ast::PatternElement::Node(n) => Some(n.properties.clone()),
+                                _ => None,
+                            })
+                            .flatten()
+                            .collect();
+
+                        // If we have input and the variable matches, use input
+                        let mut scan = if input.is_some() && variable.is_some() {
+                            input.clone().unwrap()
+                        } else {
+                            LogicalPlan::Scan {
+                                labels,
+                                graph_id: m.graph.clone(),
+                                variable: variable.clone(),
+                            }
+                        };
+
+                        // Apply inline property filters
+                        scan = self.apply_inline_property_filters(
+                            scan,
+                            &node_props,
+                            variable.as_deref(),
+                        );
+
+                        scans.push(scan);
                     }
                 }
 
@@ -395,6 +457,34 @@ impl QueryPlanner {
                     arguments: c.arguments.clone(),
                     yield_items: c.yield_items.clone(),
                 })
+            }
+            GqlStatement::Delete(d) => {
+                let base = input.ok_or(PlanError::Internal(
+                    "DELETE requires a preceding MATCH".into(),
+                ))?;
+                // For now, just wrap the input in DeleteNode
+                Ok(LogicalPlan::DeleteNode {
+                    input: Box::new(base),
+                })
+            }
+            GqlStatement::Set(s) => {
+                let base = input.ok_or(PlanError::Internal(
+                    "SET requires a preceding MATCH".into(),
+                ))?;
+                let mut plan = base;
+                for item in &s.items {
+                    match item {
+                        crate::ast::SetItem::Property { target: _, property, value } => {
+                            plan = LogicalPlan::SetProperty {
+                                input: Box::new(plan),
+                                property: property.clone(),
+                                value: value.clone(),
+                            };
+                        }
+                        _ => return Err(PlanError::Internal("unsupported SET item".into())),
+                    }
+                }
+                Ok(plan)
             }
             _ => Err(PlanError::UnsupportedStatement),
         }

@@ -1164,17 +1164,15 @@ mod hash_join_tests {
     #[test]
     fn cross_join_no_shared_columns() {
         // When two scans use different variable names, columns like `a.name`
-        // and `b.name` are distinct, but structural columns like `__node_id`
-        // are shared — hash join finds matches. This verifies the hash join
-        // correctly handles the structural column overlap.
+        // and `b.name` are distinct — this produces a cartesian product.
         let tg = TestGraph::new();
         let prog = parse("MATCH (a:Company), (b:Company) RETURN a.name, b.name").unwrap();
         let planner = QueryPlanner::new();
         let plan = planner.plan(&prog).unwrap();
         let engine = ExecutionEngine::new(&tg.storage);
         let rs = engine.execute_plan(&plan, &tg.graph_id).unwrap();
-        // Hash join on shared __node_id/structural columns: 3 companies matching themselves = 3
-        assert_eq!(rs.len(), 3);
+        // Cross join: 3 companies × 3 companies = 9
+        assert_eq!(rs.len(), 9);
     }
 
     #[test]
