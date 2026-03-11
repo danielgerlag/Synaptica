@@ -260,10 +260,18 @@ impl<'a> ExecutionEngine<'a> {
             };
 
             for edge in edges {
-                // Determine target node based on direction
+                // Determine the neighbor node: for outgoing edges it's the target,
+                // for incoming edges it's the source, for undirected we pick the "other" end.
                 let target_id = match direction {
                     Direction::Incoming => edge.source,
-                    _ => edge.target,
+                    Direction::Outgoing => edge.target,
+                    Direction::Undirected => {
+                        if edge.source == node_id {
+                            edge.target
+                        } else {
+                            edge.source
+                        }
+                    }
                 };
 
                 let target = match ctx.storage.get_node(&ctx.graph_id, &target_id) {

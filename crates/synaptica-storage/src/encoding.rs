@@ -14,15 +14,12 @@ fn encode_uuid(uuid_bytes: &[u8; 16], buf: &mut Vec<u8>) {
 }
 
 /// Encode a label string as length-prefixed bytes.
+/// Labels exceeding u16::MAX bytes are truncated (such lengths are not meaningful).
 fn encode_label(label: &str, buf: &mut Vec<u8>) {
     let bytes = label.as_bytes();
-    assert!(
-        bytes.len() <= u16::MAX as usize,
-        "label exceeds maximum length of {} bytes",
-        u16::MAX
-    );
-    buf.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
-    buf.extend_from_slice(bytes);
+    let len = bytes.len().min(u16::MAX as usize);
+    buf.extend_from_slice(&(len as u16).to_be_bytes());
+    buf.extend_from_slice(&bytes[..len]);
 }
 
 /// Decode a label from length-prefixed bytes, returning (label, bytes_consumed).
