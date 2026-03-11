@@ -343,6 +343,9 @@ impl<'a> ExecutionEngine<'a> {
 
         let mut rs = ResultSet::new(columns);
 
+        // Find __node_id column index so we can update it for chained traversals
+        let node_id_col_idx = rs.columns.iter().position(|c| c == "__node_id");
+
         for row in &expanded {
             let mut values = row.source_values.clone();
 
@@ -362,12 +365,16 @@ impl<'a> ExecutionEngine<'a> {
             if let Some(_tv) = target_variable {
                 let id_str = row.target.id.0.to_string();
                 values.push(Value::Node {
-                    id: id_str,
+                    id: id_str.clone(),
                     labels: row.target.labels.iter().map(|l| l.0.clone()).collect(),
                     properties: row.target.properties.clone(),
                 });
                 for k in &target_keys {
                     values.push(row.target.properties.get(k).cloned().unwrap_or(Value::Null));
+                }
+                // Update __node_id to the target for chained multi-hop traversals
+                if let Some(idx) = node_id_col_idx {
+                    values[idx] = Value::String(id_str);
                 }
             }
 
@@ -401,6 +408,13 @@ impl<'a> ExecutionEngine<'a> {
         input: ResultSet,
         expressions: &[Expression],
     ) -> Result<ResultSet, ExecError> {
+        // Check if any expression contains an aggregate
+        let has_agg = expressions.iter().any(|e| Self::contains_aggregate(e));
+
+        if has_agg {
+            return self.exec_project_with_aggregation(input, expressions);
+        }
+
         let mut columns: Vec<String> = expressions
             .iter()
             .enumerate()
@@ -424,6 +438,159 @@ impl<'a> ExecutionEngine<'a> {
             // Append internal column values
             for ic in &internal_cols {
                 values.push(record.get(ic).cloned().unwrap_or(Value::Null));
+            }
+            rs.add_record(values);
+        }
+        Ok(rs)
+    }
+
+    fn contains_aggregate(expr: &Expression) -> bool {
+        match expr {
+            Expression::Aggregate { .. } => true,
+            Expression::BinaryOp { left, right, .. } => {
+                Self::contains_aggregate(left) || Self::contains_aggregate(right)
+            }
+            Expression::UnaryOp { operand, .. } => Self::contains_aggregate(operand),
+            Expression::FunctionCall { args, .. } => args.iter().any(|a| Self::contains_aggregate(a)),
+            _ => false,
+        }
+    }
+
+    fn exec_project_with_aggregation(
+        &self,
+        input: ResultSet,
+        expressions: &[Expression],
+    ) -> Result<ResultSet, ExecError> {
+        use std::collections::BTreeMap;
+        use synaptica_gql::ast::AggregateFunction;
+
+        let columns: Vec<String> = expressions
+            .iter()
+            .enumerate()
+            .map(|(i, expr)| expr_column_name(expr, i))
+            .collect();
+
+        // Separate group-by keys (non-aggregate) and aggregate expressions
+        let group_indices: Vec<usize> = expressions.iter().enumerate()
+            .filter(|(_, e)| !Self::contains_aggregate(e))
+            .map(|(i, _)| i)
+            .collect();
+
+        // Group records by the group-by keys
+        let mut groups: BTreeMap<String, Vec<&Record>> = BTreeMap::new();
+        for record in &input.records {
+            let mut key = String::new();
+            for &gi in &group_indices {
+                let val = evaluate(&expressions[gi], record)?;
+                key.push_str(&format!("{:?}|", val));
+            }
+            groups.entry(key).or_default().push(record);
+        }
+
+        let mut rs = ResultSet::new(columns);
+        for (_key, records) in &groups {
+            let mut values = Vec::with_capacity(expressions.len());
+            let first_record = records[0];
+
+            for expr in expressions {
+                if let Expression::Aggregate { function, arg, distinct: _ } = expr {
+                    let agg_val = match function {
+                        AggregateFunction::Count => {
+                            if arg.is_none() {
+                                Value::Integer(records.len() as i64)
+                            } else {
+                                let count = records.iter()
+                                    .filter(|r| {
+                                        evaluate(arg.as_ref().unwrap(), r)
+                                            .map(|v| v != Value::Null)
+                                            .unwrap_or(false)
+                                    })
+                                    .count();
+                                Value::Integer(count as i64)
+                            }
+                        }
+                        AggregateFunction::Sum => {
+                            let mut total = 0i64;
+                            let mut has_float = false;
+                            let mut ftotal = 0.0f64;
+                            for r in records {
+                                if let Some(inner) = arg {
+                                    match evaluate(inner, r)? {
+                                        Value::Integer(n) => { total += n; ftotal += n as f64; }
+                                        Value::Float(f) => { has_float = true; ftotal += f; }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            if has_float { Value::Float(ftotal) } else { Value::Integer(total) }
+                        }
+                        AggregateFunction::Avg => {
+                            let mut sum = 0.0f64;
+                            let mut count = 0usize;
+                            for r in records {
+                                if let Some(inner) = arg {
+                                    match evaluate(inner, r)? {
+                                        Value::Integer(n) => { sum += n as f64; count += 1; }
+                                        Value::Float(f) => { sum += f; count += 1; }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            if count > 0 { Value::Float(sum / count as f64) } else { Value::Null }
+                        }
+                        AggregateFunction::Min => {
+                            let mut min_val = Value::Null;
+                            for r in records {
+                                if let Some(inner) = arg {
+                                    let v = evaluate(inner, r)?;
+                                    if min_val == Value::Null {
+                                        min_val = v;
+                                    } else {
+                                        match (&v, &min_val) {
+                                            (Value::Integer(a), Value::Integer(b)) if a < b => min_val = v,
+                                            (Value::Float(a), Value::Float(b)) if a < b => min_val = v,
+                                            (Value::String(a), Value::String(b)) if a < b => min_val = v,
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                            min_val
+                        }
+                        AggregateFunction::Max => {
+                            let mut max_val = Value::Null;
+                            for r in records {
+                                if let Some(inner) = arg {
+                                    let v = evaluate(inner, r)?;
+                                    if max_val == Value::Null {
+                                        max_val = v;
+                                    } else {
+                                        match (&v, &max_val) {
+                                            (Value::Integer(a), Value::Integer(b)) if a > b => max_val = v,
+                                            (Value::Float(a), Value::Float(b)) if a > b => max_val = v,
+                                            (Value::String(a), Value::String(b)) if a > b => max_val = v,
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                            max_val
+                        }
+                        AggregateFunction::Collect => {
+                            let mut items = Vec::new();
+                            for r in records {
+                                if let Some(inner) = arg {
+                                    items.push(evaluate(inner, r)?);
+                                }
+                            }
+                            Value::List(items)
+                        }
+                        _ => Value::Null,
+                    };
+                    values.push(agg_val);
+                } else {
+                    values.push(evaluate(expr, first_record)?);
+                }
             }
             rs.add_record(values);
         }

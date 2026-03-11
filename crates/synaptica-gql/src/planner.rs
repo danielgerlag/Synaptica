@@ -209,12 +209,9 @@ impl QueryPlanner {
                             .collect();
 
                         let source_node = nodes.first().ok_or_else(|| PlanError::Internal("edge pattern missing source node".into()))?;
-                        let edge_pat = edges.first().ok_or_else(|| PlanError::Internal("edge pattern missing edge".into()))?;
-                        let target_node = nodes.get(1);
 
-                        // If we have input from a previous statement (e.g. WITH)
-                        // and the source variable matches, use the input as base
-                        let mut source_scan = if input.is_some() && source_node.variable.is_some() {
+                        // Start with the source node scan (or input from WITH)
+                        let mut current_plan = if input.is_some() && source_node.variable.is_some() {
                             input.clone().unwrap()
                         } else {
                             LogicalPlan::Scan {
@@ -224,21 +221,27 @@ impl QueryPlanner {
                             }
                         };
 
-                        // Apply inline property filters on source node pattern
-                        source_scan = self.apply_inline_property_filters(
-                            source_scan,
+                        // Apply inline property filters on source node
+                        current_plan = self.apply_inline_property_filters(
+                            current_plan,
                             &source_node.properties,
                             source_node.variable.as_deref(),
                         );
 
-                        scans.push(LogicalPlan::Expand {
-                            input: Box::new(source_scan),
-                            edge_label: edge_pat.labels.first().cloned().unwrap_or_default(),
-                            direction: edge_pat.direction.clone(),
-                            target_labels: target_node.map(|n| n.labels.clone()).unwrap_or_default(),
-                            edge_variable: edge_pat.variable.clone(),
-                            target_variable: target_node.and_then(|n| n.variable.clone()),
-                        });
+                        // Chain Expand for each edge in the path
+                        for (i, edge_pat) in edges.iter().enumerate() {
+                            let target_node = nodes.get(i + 1);
+                            current_plan = LogicalPlan::Expand {
+                                input: Box::new(current_plan),
+                                edge_label: edge_pat.labels.first().cloned().unwrap_or_default(),
+                                direction: edge_pat.direction.clone(),
+                                target_labels: target_node.map(|n| n.labels.clone()).unwrap_or_default(),
+                                edge_variable: edge_pat.variable.clone(),
+                                target_variable: target_node.and_then(|n| n.variable.clone()),
+                            };
+                        }
+
+                        scans.push(current_plan);
                     } else {
                         let labels: Vec<String> = path.elements.iter()
                             .filter_map(|e| match e {
