@@ -2110,6 +2110,8 @@ name = "synaptica"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "serde",
+ "serde_json",
  "synaptica-cluster",
  "synaptica-core",
  "synaptica-exec",

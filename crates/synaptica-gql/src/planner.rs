@@ -135,6 +135,26 @@ impl QueryPlanner {
         Self
     }
 
+    /// If an ORDER BY expression is an identifier matching a RETURN alias,
+    /// replace it with the original expression so the Sort (which runs before
+    /// Project) can evaluate it.
+    fn resolve_order_alias(
+        expr: &Expression,
+        return_exprs: &[Expression],
+        aliases: &[Option<String>],
+    ) -> Expression {
+        if let Expression::Identifier(name) = expr {
+            for (i, alias) in aliases.iter().enumerate() {
+                if let Some(a) = alias {
+                    if a == name {
+                        return return_exprs[i].clone();
+                    }
+                }
+            }
+        }
+        expr.clone()
+    }
+
     /// Plan a complete GQL program.
     ///
     /// Currently handles a limited subset of statement sequences; this will be
@@ -315,12 +335,16 @@ impl QueryPlanner {
                 let aliases: Vec<Option<String>> =
                     r.items.iter().map(|i| i.alias.clone()).collect();
 
-                // Sort BEFORE Project so ORDER BY can access original MATCH variables
+                // Sort BEFORE Project so ORDER BY can access original MATCH variables.
+                // Translate alias references (e.g. ORDER BY cnt) to original expressions.
                 let mut plan = base;
 
                 if let Some(ref ob) = r.order_by {
                     let order_exprs: Vec<(Expression, SortDirection)> =
-                        ob.items.iter().map(|i| (i.expression.clone(), i.direction.clone())).collect();
+                        ob.items.iter().map(|i| {
+                            let expr = Self::resolve_order_alias(&i.expression, &exprs, &aliases);
+                            (expr, i.direction.clone())
+                        }).collect();
                     plan = LogicalPlan::Sort {
                         input: Box::new(plan),
                         order_by: order_exprs,
