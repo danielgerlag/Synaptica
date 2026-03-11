@@ -168,26 +168,43 @@ async fn serve_static_files(addr: &str, dir: &str) -> anyhow::Result<()> {
                 base.join("index.html")
             } else {
                 let relative = path.trim_start_matches('/');
-                base.join(relative)
+                let candidate = base.join(relative);
+                // Prevent path traversal: canonicalize and verify it's under base
+                match candidate.canonicalize() {
+                    Ok(canonical) => {
+                        let base_canonical = match base.canonicalize() {
+                            Ok(b) => b,
+                            Err(_) => return,
+                        };
+                        if !canonical.starts_with(&base_canonical) {
+                            let header = "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\n\r\nForbidden";
+                            let _ = stream.write_all(header.as_bytes()).await;
+                            return;
+                        }
+                        canonical
+                    }
+                    Err(_) => candidate, // File doesn't exist; will fall through to SPA fallback
+                }
             };
 
             // Serve file or fall back to index.html for SPA routing
-            let (body, content_type) = if file_path.is_file() {
+            let (body, content_type, status) = if file_path.is_file() {
                 let ct = guess_content_type(&file_path);
                 match tokio::fs::read(&file_path).await {
-                    Ok(data) => (data, ct),
-                    Err(_) => (b"Internal Server Error".to_vec(), "text/plain"),
+                    Ok(data) => (data, ct, "200 OK"),
+                    Err(_) => (b"Internal Server Error".to_vec(), "text/plain", "500 Internal Server Error"),
                 }
             } else {
                 let index = base.join("index.html");
                 match tokio::fs::read(&index).await {
-                    Ok(data) => (data, "text/html"),
-                    Err(_) => (b"Not Found".to_vec(), "text/plain"),
+                    Ok(data) => (data, "text/html", "200 OK"),
+                    Err(_) => (b"Not Found".to_vec(), "text/plain", "404 Not Found"),
                 }
             };
 
             let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n",
+                "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n",
+                status,
                 content_type,
                 body.len(),
             );

@@ -138,7 +138,12 @@ impl<'a> ExecutionEngine<'a> {
             ctx.storage.scan_nodes(&ctx.graph_id)?
         } else {
             let label = Label::new(&labels[0]);
-            ctx.storage.scan_nodes_by_label(&ctx.graph_id, &label)?
+            let mut result = ctx.storage.scan_nodes_by_label(&ctx.graph_id, &label)?;
+            // Filter by ALL required labels, not just the first
+            if labels.len() > 1 {
+                result.retain(|node| labels.iter().all(|l| node.has_label(l)));
+            }
+            result
         };
 
         // Build a result set with columns: __node_id, __labels, + all property keys
@@ -243,7 +248,13 @@ impl<'a> ExecutionEngine<'a> {
                 Direction::Incoming => ctx.storage.get_incoming_edges(&ctx.graph_id, &node_id, label_filter.as_ref())?,
                 Direction::Undirected => {
                     let mut edges = ctx.storage.get_outgoing_edges(&ctx.graph_id, &node_id, label_filter.as_ref())?;
-                    edges.extend(ctx.storage.get_incoming_edges(&ctx.graph_id, &node_id, label_filter.as_ref())?);
+                    let outgoing_ids: std::collections::HashSet<_> = edges.iter().map(|e| e.id).collect();
+                    // Only add incoming edges not already seen (avoids self-loop duplicates)
+                    for e in ctx.storage.get_incoming_edges(&ctx.graph_id, &node_id, label_filter.as_ref())? {
+                        if !outgoing_ids.contains(&e.id) {
+                            edges.push(e);
+                        }
+                    }
                     edges
                 }
             };

@@ -14,14 +14,15 @@ impl NodeRuntime {
         let storage = StorageEngine::open(&config.data_dir, &StorageConfig::default())?;
         let storage = Arc::new(storage);
 
-        // Create or load the default graph
-        let default_graph_id = GraphId::new();
+        // Derive a deterministic graph ID from the graph name so data
+        // persists across restarts.
+        let default_graph_id = GraphId::from_name(&config.default_graph);
         let meta = GraphMeta {
             id: default_graph_id,
             name: config.default_graph.clone(),
             graph_type: None,
         };
-        // Best-effort: if it already exists we ignore the error
+        // Store metadata (idempotent — same ID on every start)
         let _ = storage.put_graph_meta(&meta);
 
         tracing::info!(

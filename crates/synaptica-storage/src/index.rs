@@ -10,7 +10,8 @@ use rocksdb::{DBWithThreadMode, Direction, IteratorMode, MultiThreaded};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use synaptica_core::graph::{GraphId, Node, NodeId};
 use synaptica_core::types::Value;
 
@@ -49,7 +50,7 @@ fn hash_index_name(name: &str) -> [u8; HASH_LEN] {
 /// Type tags guarantee cross-type ordering never collides.
 /// Integers use sign-bit-flipped big-endian so that negative < positive.
 /// Floats use IEEE-754 comparable encoding.
-/// Strings are null-terminated UTF-8 (Rust strings never contain 0x00).
+/// Strings use escaped encoding: 0x00 → [0x00, 0x01], end → [0x00, 0x00].
 fn encode_value_comparable(value: &Value, buf: &mut Vec<u8>) {
     match value {
         Value::Null => buf.push(0x00),
@@ -75,14 +76,31 @@ fn encode_value_comparable(value: &Value, buf: &mut Vec<u8>) {
         }
         Value::String(s) => {
             buf.push(0x04);
-            buf.extend_from_slice(s.as_bytes());
+            // Escape NUL bytes: 0x00 → [0x00, 0x01]; end-of-string → [0x00, 0x00]
+            for &byte in s.as_bytes() {
+                if byte == 0x00 {
+                    buf.push(0x00);
+                    buf.push(0x01);
+                } else {
+                    buf.push(byte);
+                }
+            }
+            buf.push(0x00);
             buf.push(0x00);
         }
         other => {
             buf.push(0xFF);
-            let serialized = bincode::serialize(other).unwrap_or_default();
-            buf.extend_from_slice(&(serialized.len() as u32).to_be_bytes());
-            buf.extend_from_slice(&serialized);
+            // Use length-prefixed encoding; serialization failure → empty (logged)
+            match bincode::serialize(other) {
+                Ok(serialized) => {
+                    buf.extend_from_slice(&(serialized.len() as u32).to_be_bytes());
+                    buf.extend_from_slice(&serialized);
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "index value serialization failed");
+                    buf.extend_from_slice(&0u32.to_be_bytes());
+                }
+            }
         }
     }
 }
@@ -218,7 +236,7 @@ impl IndexManager {
         let encoded = Self::encode_properties(def, node);
 
         if def.unique {
-            let _guard = self.unique_lock.lock().unwrap();
+            let _guard = self.unique_lock.lock();
             let vp = Self::entry_value_prefix(def, &encoded);
             for item in self.db.prefix_iterator_cf(&cf, &vp) {
                 let (key, _) = item?;

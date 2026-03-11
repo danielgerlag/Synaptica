@@ -101,6 +101,11 @@ impl StorageEngine {
         &self.db
     }
 
+    /// Load a TimestampOracle from the persisted counter in this database.
+    pub fn load_timestamp_oracle(&self) -> crate::mvcc::TimestampOracle {
+        crate::mvcc::TimestampOracle::load_from_db(&self.db)
+    }
+
     // --- Graph Metadata ---
 
     /// Create or update graph metadata.
@@ -172,10 +177,19 @@ impl StorageEngine {
         encoding::deserialize_value(&value).map_err(StorageError::Deserialization)
     }
 
-    /// Delete a node and its label indexes.
+    /// Delete a node, its label indexes, and all connected edges.
     pub fn delete_node(&self, graph_id: &GraphId, node_id: &synaptica_core::graph::NodeId) -> StorageResult<()> {
         // First get the node to know its labels
         let node = self.get_node(graph_id, node_id)?;
+
+        // Collect connected edges to delete
+        let outgoing = self.get_outgoing_edges(graph_id, node_id, None)?;
+        let incoming = self.get_incoming_edges(graph_id, node_id, None)?;
+
+        // Delete all connected edges first
+        for edge in outgoing.iter().chain(incoming.iter()) {
+            self.delete_edge(graph_id, &edge.id)?;
+        }
 
         let mut batch = WriteBatch::default();
         let nodes_cf = self.cf(ColumnFamilies::NODES)?;
@@ -766,12 +780,16 @@ mod tests {
         let edge = Edge::new(graph_id, node_a.id, node_b.id, "KNOWS");
         engine.put_edge(&edge).unwrap();
 
-        // Delete source node — edge still exists (no referential integrity at storage layer)
+        // Delete source node — connected edges are also cleaned up
         engine.delete_node(&graph_id, &node_a.id).unwrap();
         assert!(engine.get_node(&graph_id, &node_a.id).is_err());
 
-        let fetched_edge = engine.get_edge(&graph_id, &edge.id).unwrap();
-        assert_eq!(fetched_edge, edge);
+        // Edge should be gone too
+        assert!(engine.get_edge(&graph_id, &edge.id).is_err());
+
+        // node_b's incoming edges should be empty
+        let incoming = engine.get_incoming_edges(&graph_id, &node_b.id, None).unwrap();
+        assert!(incoming.is_empty());
     }
 
     #[test]

@@ -318,7 +318,9 @@ fn eval_unary_op(op: &UnaryOp, v: &Value) -> Result<Value, ExecError> {
             ))),
         },
         UnaryOp::Neg => match v {
-            Value::Integer(i) => Ok(Value::Integer(-i)),
+            Value::Integer(i) => i.checked_neg()
+                .map(Value::Integer)
+                .ok_or_else(|| ExecError::ExpressionError("integer overflow in negation".into())),
             Value::Float(f) => Ok(Value::Float(-f)),
             Value::Null => Ok(Value::Null),
             _ => Err(ExecError::TypeError(format!(
@@ -380,7 +382,7 @@ fn eval_function(name: &str, args: &[Value]) -> Result<Value, ExecError> {
         "size" => {
             let v = args.first().unwrap_or(&Value::Null);
             match v {
-                Value::String(s) => Ok(Value::Integer(s.len() as i64)),
+                Value::String(s) => Ok(Value::Integer(s.chars().count() as i64)),
                 Value::List(l) => Ok(Value::Integer(l.len() as i64)),
                 Value::Map(m) => Ok(Value::Integer(m.len() as i64)),
                 Value::Null => Ok(Value::Null),

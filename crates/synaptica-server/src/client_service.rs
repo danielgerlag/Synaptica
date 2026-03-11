@@ -34,6 +34,20 @@ pub struct SynapticaServiceImpl {
     pub default_graph_id: GraphId,
 }
 
+/// RAII guard for ACTIVE_CONNECTIONS gauge — decrements on drop.
+struct ConnectionGuard;
+impl ConnectionGuard {
+    fn new() -> Self {
+        ACTIVE_CONNECTIONS.inc();
+        Self
+    }
+}
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        ACTIVE_CONNECTIONS.dec();
+    }
+}
+
 #[tonic::async_trait]
 impl SynapticaService for SynapticaServiceImpl {
     #[tracing::instrument(skip(self, request), fields(graph = ?self.default_graph_id))]
@@ -41,7 +55,7 @@ impl SynapticaService for SynapticaServiceImpl {
         &self,
         request: Request<QueryRequest>,
     ) -> Result<Response<QueryResponse>, Status> {
-        ACTIVE_CONNECTIONS.inc();
+        let _conn_guard = ConnectionGuard::new();
         let req = request.into_inner();
         let start = std::time::Instant::now();
         let graph_name = self.default_graph_id.0.to_string();
@@ -55,7 +69,6 @@ impl SynapticaService for SynapticaServiceImpl {
                 let elapsed = start.elapsed().as_secs_f64();
                 QUERY_DURATION.with_label_values(&[&graph_name]).observe(elapsed);
                 QUERIES_TOTAL.with_label_values(&["error"]).inc();
-                ACTIVE_CONNECTIONS.dec();
                 tracing::error!(error = %e, elapsed_ms = %start.elapsed().as_millis(), "parse error");
                 return Ok(Response::new(QueryResponse {
                     columns: vec![],
@@ -74,7 +87,6 @@ impl SynapticaService for SynapticaServiceImpl {
                 let elapsed = start.elapsed().as_secs_f64();
                 QUERY_DURATION.with_label_values(&[&graph_name]).observe(elapsed);
                 QUERIES_TOTAL.with_label_values(&["error"]).inc();
-                ACTIVE_CONNECTIONS.dec();
                 tracing::error!(error = %e, elapsed_ms = %start.elapsed().as_millis(), "plan error");
                 return Ok(Response::new(QueryResponse {
                     columns: vec![],
@@ -93,7 +105,6 @@ impl SynapticaService for SynapticaServiceImpl {
                 let elapsed = start.elapsed().as_secs_f64();
                 QUERY_DURATION.with_label_values(&[&graph_name]).observe(elapsed);
                 QUERIES_TOTAL.with_label_values(&["error"]).inc();
-                ACTIVE_CONNECTIONS.dec();
                 tracing::error!(error = %e, elapsed_ms = %start.elapsed().as_millis(), "execution error");
                 return Ok(Response::new(QueryResponse {
                     columns: vec![],
@@ -109,7 +120,6 @@ impl SynapticaService for SynapticaServiceImpl {
             .with_label_values(&[&graph_name])
             .observe(elapsed.as_secs_f64());
         QUERIES_TOTAL.with_label_values(&["success"]).inc();
-        ACTIVE_CONNECTIONS.dec();
 
         let elapsed_ms = std::cmp::max(1, elapsed.as_millis() as i64);
         let rows_returned = result_set.records.len() as i64;

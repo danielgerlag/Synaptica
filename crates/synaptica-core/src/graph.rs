@@ -7,9 +7,21 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct GraphId(pub Uuid);
 
+/// Fixed namespace UUID for deterministic graph ID generation (UUID v5).
+const GRAPH_NAMESPACE: Uuid = Uuid::from_bytes([
+    0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1,
+    0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
+]);
+
 impl GraphId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
+    }
+
+    /// Create a deterministic GraphId from a graph name.
+    /// Same name always produces the same ID, so data persists across restarts.
+    pub fn from_name(name: &str) -> Self {
+        Self(Uuid::new_v5(&GRAPH_NAMESPACE, name.as_bytes()))
     }
 
     pub fn from_bytes(bytes: [u8; 16]) -> Self {

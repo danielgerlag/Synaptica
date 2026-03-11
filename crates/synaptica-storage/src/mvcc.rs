@@ -28,11 +28,43 @@ pub struct TimestampOracle {
     counter: AtomicU64,
 }
 
+const TS_ORACLE_KEY: &[u8] = b"__ts_oracle_counter__";
+
 impl TimestampOracle {
     pub fn new() -> Self {
         Self {
             counter: AtomicU64::new(1),
         }
+    }
+
+    /// Initialize from a persisted value, starting above any previously used timestamp.
+    pub fn new_from_persisted(persisted_ts: u64) -> Self {
+        Self {
+            counter: AtomicU64::new(persisted_ts + 1),
+        }
+    }
+
+    /// Load the last persisted timestamp from RocksDB and initialize above it.
+    pub fn load_from_db(db: &DBWithThreadMode<MultiThreaded>) -> Self {
+        let persisted = db
+            .get(TS_ORACLE_KEY)
+            .ok()
+            .flatten()
+            .and_then(|bytes| {
+                if bytes.len() == 8 {
+                    Some(u64::from_be_bytes(bytes.try_into().unwrap()))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        Self::new_from_persisted(persisted)
+    }
+
+    /// Persist the current counter to RocksDB for crash recovery.
+    pub fn persist_to_db(&self, db: &DBWithThreadMode<MultiThreaded>) -> Result<(), rocksdb::Error> {
+        let val = self.counter.load(Ordering::SeqCst);
+        db.put(TS_ORACLE_KEY, val.to_be_bytes())
     }
 
     pub fn next(&self) -> u64 {
@@ -79,12 +111,14 @@ pub fn extract_key_prefix(versioned_key: &[u8]) -> &[u8] {
     }
 }
 
-/// Tombstone marker for deleted keys.
-const TOMBSTONE: &[u8] = b"__TOMBSTONE__";
+/// Tombstone marker: a single zero byte distinguishes deletions from live values.
+/// Live values are stored as-is — the tombstone is a unique 1-byte sentinel that
+/// cannot collide with bincode-serialized data (which always starts with a type tag >= 1 byte).
+const TOMBSTONE: &[u8] = &[0x00];
 
 /// Check if a value is a tombstone (deletion marker).
 pub fn is_tombstone(value: &[u8]) -> bool {
-    value == TOMBSTONE
+    value.len() == 1 && value[0] == 0x00
 }
 
 /// MVCC-aware storage operations on top of a RocksDB instance.
@@ -103,6 +137,11 @@ impl MvccStore {
 
     pub fn timestamp_oracle(&self) -> &TimestampOracle {
         &self.ts_oracle
+    }
+
+    /// Persist the current timestamp counter to RocksDB for crash recovery.
+    pub fn persist_timestamp(&self) -> MvccResult<()> {
+        self.ts_oracle.persist_to_db(&self.db).map_err(MvccError::RocksDb)
     }
 
     /// Write a versioned key-value pair at the given timestamp.

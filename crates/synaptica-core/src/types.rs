@@ -192,12 +192,14 @@ impl fmt::Display for Duration {
             write!(f, "{}D", self.days)?;
         }
         if self.nanos != 0 {
-            let secs = self.nanos / 1_000_000_000;
-            let rem = self.nanos % 1_000_000_000;
+            let abs_nanos = self.nanos.unsigned_abs();
+            let secs = abs_nanos / 1_000_000_000;
+            let rem = abs_nanos % 1_000_000_000;
+            let sign = if self.nanos < 0 { "-" } else { "" };
             if rem != 0 {
-                write!(f, "T{}.{:09}S", secs, rem.unsigned_abs())?;
+                write!(f, "T{}{}.{:09}S", sign, secs, rem)?;
             } else {
-                write!(f, "T{}S", secs)?;
+                write!(f, "T{}{}S", sign, secs)?;
             }
         }
         Ok(())

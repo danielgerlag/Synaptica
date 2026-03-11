@@ -16,6 +16,11 @@ fn encode_uuid(uuid_bytes: &[u8; 16], buf: &mut Vec<u8>) {
 /// Encode a label string as length-prefixed bytes.
 fn encode_label(label: &str, buf: &mut Vec<u8>) {
     let bytes = label.as_bytes();
+    assert!(
+        bytes.len() <= u16::MAX as usize,
+        "label exceeds maximum length of {} bytes",
+        u16::MAX
+    );
     buf.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
     buf.extend_from_slice(bytes);
 }

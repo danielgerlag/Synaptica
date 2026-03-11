@@ -27,8 +27,9 @@ impl TransactionManager {
 
     /// Begin a new transaction with a snapshot at the current timestamp.
     pub fn begin(&self) -> Transaction {
-        let snapshot_ts = self.ts_oracle.current();
+        // Atomically get tx_id; snapshot is the timestamp just before it
         let tx_id = self.ts_oracle.next();
+        let snapshot_ts = tx_id - 1;
         Transaction::new(tx_id, snapshot_ts, self.store.clone())
     }
 
@@ -88,6 +89,11 @@ impl TransactionManager {
         }
 
         drop(cw);
+
+        // Persist timestamp counter periodically (every 100 commits)
+        if commit_ts % 100 == 0 {
+            let _ = self.store.persist_timestamp();
+        }
 
         tx.state = TxState::Committed;
         Ok(commit_ts)
