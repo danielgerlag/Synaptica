@@ -126,9 +126,9 @@ impl<'a> ExecutionEngine<'a> {
                 let rs = self.execute_node(input, ctx)?;
                 self.exec_delete_nodes(rs, ctx)
             }
-            LogicalPlan::SetProperty { input, property, value } => {
+            LogicalPlan::SetProperty { input, target, property, value } => {
                 let rs = self.execute_node(input, ctx)?;
-                self.exec_set_property(rs, property, value, ctx)
+                self.exec_set_property(rs, target.as_deref(), property, value, ctx)
             }
             LogicalPlan::Distinct { input } => {
                 let rs = self.execute_node(input, ctx)?;
@@ -437,6 +437,18 @@ impl<'a> ExecutionEngine<'a> {
         columns.extend(internal_cols.iter().cloned());
 
         let mut rs = ResultSet::new(columns);
+
+        // If input is empty (standalone RETURN without MATCH), produce one row
+        if input.records.is_empty() && input.columns.is_empty() {
+            let mut values = Vec::with_capacity(expressions.len());
+            let empty_record = Record { columns: vec![], values: vec![] };
+            for expr in expressions {
+                values.push(evaluate(expr, &empty_record)?);
+            }
+            rs.add_record(values);
+            return Ok(rs);
+        }
+
         for record in &input.records {
             let mut values = Vec::with_capacity(expressions.len() + internal_cols.len());
             for expr in expressions {
@@ -502,16 +514,47 @@ impl<'a> ExecutionEngine<'a> {
         }
 
         let mut rs = ResultSet::new(columns);
+
+        // When no GROUP BY and empty input, produce one row with aggregate defaults
+        if groups.is_empty() && group_indices.is_empty() {
+            let mut values = Vec::with_capacity(expressions.len());
+            for expr in expressions {
+                if let Expression::Aggregate { function, .. } = expr {
+                    let default_val = match function {
+                        AggregateFunction::Count => Value::Integer(0),
+                        AggregateFunction::Sum => Value::Integer(0),
+                        AggregateFunction::Collect => Value::List(vec![]),
+                        _ => Value::Null,
+                    };
+                    values.push(default_val);
+                } else {
+                    values.push(Value::Null);
+                }
+            }
+            rs.add_record(values);
+            return Ok(rs);
+        }
+
         for (_key, records) in &groups {
             let mut values = Vec::with_capacity(expressions.len());
             let first_record = records[0];
 
             for expr in expressions {
-                if let Expression::Aggregate { function, arg, distinct: _ } = expr {
+                if let Expression::Aggregate { function, arg, distinct } = expr {
                     let agg_val = match function {
                         AggregateFunction::Count => {
                             if arg.is_none() {
                                 Value::Integer(records.len() as i64)
+                            } else if *distinct {
+                                let mut seen = std::collections::HashSet::new();
+                                for r in records {
+                                    if let Ok(v) = evaluate(arg.as_ref().unwrap(), r) {
+                                        if v != Value::Null {
+                                            seen.insert(format!("{:?}", v));
+                                        }
+                                    }
+                                }
+                                Value::Integer(seen.len() as i64)
                             } else {
                                 let count = records.iter()
                                     .filter(|r| {
@@ -874,6 +917,7 @@ impl<'a> ExecutionEngine<'a> {
     fn exec_set_property(
         &self,
         rs: ResultSet,
+        target: Option<&str>,
         property: &str,
         value_expr: &Expression,
         ctx: &ExecutionContext<'_>,
@@ -882,16 +926,34 @@ impl<'a> ExecutionEngine<'a> {
 
         for record in &rs.records {
             let val = evaluate(value_expr, record)?;
-            for rv in &record.values {
-                if let Value::Node { ref id, .. } = rv {
-                    let nid = NodeId(Uuid::parse_str(id)
-                        .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?);
-                    let mut node = ctx.storage.get_node(&ctx.graph_id, &nid)
-                        .map_err(|e| ExecError::Internal(e.to_string()))?;
-                    node.properties.insert(property.to_string(), val.clone());
-                    ctx.storage.put_node(&node)
-                        .map_err(|e| ExecError::Internal(e.to_string()))?;
-                    modified += 1;
+
+            // If a target variable is specified, only modify that node
+            if let Some(tgt) = target {
+                if let Some(node_val) = record.get(tgt) {
+                    if let Value::Node { ref id, .. } = node_val {
+                        let nid = NodeId(Uuid::parse_str(id)
+                            .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?);
+                        let mut node = ctx.storage.get_node(&ctx.graph_id, &nid)
+                            .map_err(|e| ExecError::Internal(e.to_string()))?;
+                        node.properties.insert(property.to_string(), val.clone());
+                        ctx.storage.put_node(&node)
+                            .map_err(|e| ExecError::Internal(e.to_string()))?;
+                        modified += 1;
+                    }
+                }
+            } else {
+                // Fallback: modify all nodes in the record
+                for rv in &record.values {
+                    if let Value::Node { ref id, .. } = rv {
+                        let nid = NodeId(Uuid::parse_str(id)
+                            .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?);
+                        let mut node = ctx.storage.get_node(&ctx.graph_id, &nid)
+                            .map_err(|e| ExecError::Internal(e.to_string()))?;
+                        node.properties.insert(property.to_string(), val.clone());
+                        ctx.storage.put_node(&node)
+                            .map_err(|e| ExecError::Internal(e.to_string()))?;
+                        modified += 1;
+                    }
                 }
             }
         }

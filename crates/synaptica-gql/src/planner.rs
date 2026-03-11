@@ -95,6 +95,7 @@ pub enum LogicalPlan {
     /// Set a property on nodes/edges produced by `input`.
     SetProperty {
         input: Box<LogicalPlan>,
+        target: Option<String>,
         property: String,
         value: Expression,
     },
@@ -314,17 +315,8 @@ impl QueryPlanner {
                 let aliases: Vec<Option<String>> =
                     r.items.iter().map(|i| i.alias.clone()).collect();
 
-                let mut plan = LogicalPlan::Project {
-                    input: Box::new(base),
-                    expressions: exprs,
-                    aliases,
-                };
-
-                if r.distinct {
-                    plan = LogicalPlan::Distinct {
-                        input: Box::new(plan),
-                    };
-                }
+                // Sort BEFORE Project so ORDER BY can access original MATCH variables
+                let mut plan = base;
 
                 if let Some(ref ob) = r.order_by {
                     let order_exprs: Vec<(Expression, SortDirection)> =
@@ -332,6 +324,18 @@ impl QueryPlanner {
                     plan = LogicalPlan::Sort {
                         input: Box::new(plan),
                         order_by: order_exprs,
+                    };
+                }
+
+                plan = LogicalPlan::Project {
+                    input: Box::new(plan),
+                    expressions: exprs,
+                    aliases,
+                };
+
+                if r.distinct {
+                    plan = LogicalPlan::Distinct {
+                        input: Box::new(plan),
                     };
                 }
 
@@ -484,9 +488,15 @@ impl QueryPlanner {
                 let mut plan = base;
                 for item in &s.items {
                     match item {
-                        crate::ast::SetItem::Property { target: _, property, value } => {
+                        crate::ast::SetItem::Property { target, property, value } => {
+                            let target_name = if let Expression::Identifier(name) = target {
+                                Some(name.clone())
+                            } else {
+                                None
+                            };
                             plan = LogicalPlan::SetProperty {
                                 input: Box::new(plan),
+                                target: target_name,
                                 property: property.clone(),
                                 value: value.clone(),
                             };

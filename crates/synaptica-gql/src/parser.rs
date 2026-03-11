@@ -136,6 +136,23 @@ impl Parser {
         self.depth -= 1;
     }
 
+    fn lookahead_is_lparen(&self) -> bool {
+        self.peek_at(1) == Some(&Token::LParen)
+    }
+
+    fn keyword_to_string(&self) -> String {
+        match self.peek() {
+            Token::Type => "type".to_string(),
+            Token::Count => "count".to_string(),
+            Token::Sum => "sum".to_string(),
+            Token::Avg => "avg".to_string(),
+            Token::Min => "min".to_string(),
+            Token::Max => "max".to_string(),
+            Token::Collect => "collect".to_string(),
+            _ => format!("{:?}", self.peek()).to_lowercase(),
+        }
+    }
+
     fn expect_ident(&mut self) -> Result<String, ParseError> {
         if let Token::Ident(name) = self.peek().clone() {
             self.advance();
@@ -1240,13 +1257,38 @@ impl Parser {
                     subquery: Box::new(stmt),
                 })
             }
-            // Aggregate functions
-            Token::Count => self.parse_aggregate(AggregateFunction::Count),
-            Token::Sum => self.parse_aggregate(AggregateFunction::Sum),
-            Token::Avg => self.parse_aggregate(AggregateFunction::Avg),
-            Token::Min => self.parse_aggregate(AggregateFunction::Min),
-            Token::Max => self.parse_aggregate(AggregateFunction::Max),
-            Token::Collect => self.parse_aggregate(AggregateFunction::Collect),
+            // Aggregate functions — only when followed by '('
+            Token::Count if self.lookahead_is_lparen() => self.parse_aggregate(AggregateFunction::Count),
+            Token::Sum if self.lookahead_is_lparen() => self.parse_aggregate(AggregateFunction::Sum),
+            Token::Avg if self.lookahead_is_lparen() => self.parse_aggregate(AggregateFunction::Avg),
+            Token::Min if self.lookahead_is_lparen() => self.parse_aggregate(AggregateFunction::Min),
+            Token::Max if self.lookahead_is_lparen() => self.parse_aggregate(AggregateFunction::Max),
+            Token::Collect if self.lookahead_is_lparen() => self.parse_aggregate(AggregateFunction::Collect),
+            // Keywords that can also be function calls (e.g. TYPE(e))
+            Token::Type => {
+                let name = self.keyword_to_string();
+                self.advance();
+                if self.peek() == &Token::LParen {
+                    self.advance();
+                    let mut args = Vec::new();
+                    if self.peek() != &Token::RParen {
+                        args.push(self.parse_expression()?);
+                        while self.match_token(&Token::Comma) {
+                            args.push(self.parse_expression()?);
+                        }
+                    }
+                    self.expect(&Token::RParen)?;
+                    Ok(Expression::FunctionCall { name, args })
+                } else {
+                    Ok(Expression::Identifier(name))
+                }
+            }
+            // Keywords used as identifiers (e.g. AS sum, AS type)
+            Token::Count | Token::Sum | Token::Avg | Token::Min | Token::Max | Token::Collect => {
+                let name = self.keyword_to_string();
+                self.advance();
+                Ok(Expression::Identifier(name))
+            }
             // Identifiers / function calls
             Token::Ident(name) => {
                 self.advance();
@@ -1410,7 +1452,7 @@ impl Parser {
     fn parse_return_item(&mut self) -> Result<ReturnItem, ParseError> {
         let expression = self.parse_expression()?;
         let alias = if self.match_token(&Token::As) {
-            Some(self.expect_ident()?)
+            Some(self.expect_ident_or_keyword()?)
         } else {
             None
         };

@@ -399,6 +399,9 @@ fn eval_function(name: &str, args: &[Value]) -> Result<Value, ExecError> {
                 Value::Map(m) => Ok(Value::List(
                     m.keys().map(|k| Value::String(k.clone())).collect(),
                 )),
+                Value::Node { properties, .. } => Ok(Value::List(
+                    properties.keys().map(|k| Value::String(k.clone())).collect(),
+                )),
                 Value::Null => Ok(Value::Null),
                 _ => Err(ExecError::TypeError(format!(
                     "keys() not supported for {}",
@@ -409,6 +412,9 @@ fn eval_function(name: &str, args: &[Value]) -> Result<Value, ExecError> {
         "labels" => {
             let v = args.first().unwrap_or(&Value::Null);
             match v {
+                Value::Node { labels, .. } => Ok(Value::List(
+                    labels.iter().map(|l| Value::String(l.clone())).collect(),
+                )),
                 Value::List(l) => Ok(Value::List(l.clone())),
                 Value::Null => Ok(Value::Null),
                 _ => Ok(Value::List(vec![])),
@@ -416,7 +422,10 @@ fn eval_function(name: &str, args: &[Value]) -> Result<Value, ExecError> {
         }
         "type" => {
             let v = args.first().unwrap_or(&Value::Null);
-            Ok(Value::String(v.type_name().to_string()))
+            match v {
+                Value::Edge { label, .. } => Ok(Value::String(label.clone())),
+                _ => Ok(Value::String(v.type_name().to_string())),
+            }
         }
         "id" => {
             let v = args.first().unwrap_or(&Value::Null);
