@@ -121,6 +121,27 @@ pub enum LogicalPlan {
         label: String,
         properties: Vec<(String, Expression)>,
     },
+    /// Scan nodes using a secondary property index (exact-match or range).
+    IndexScan {
+        index_name: String,
+        labels: Vec<String>,
+        variable: Option<String>,
+        lookup_properties: Vec<String>,
+        lookup_values: Vec<Expression>,
+        remaining_predicate: Option<Expression>,
+    },
+    /// DDL: create a property index.
+    CreateIndex {
+        name: String,
+        unique: bool,
+        entity_type: String,
+        label: Option<String>,
+        property_names: Vec<String>,
+    },
+    /// DDL: drop a property index.
+    DropIndex {
+        name: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -529,6 +550,20 @@ impl QueryPlanner {
                     }
                 }
                 Ok(plan)
+            }
+            GqlStatement::CreateIndex(ci) => {
+                Ok(LogicalPlan::CreateIndex {
+                    name: ci.name.clone(),
+                    unique: ci.unique,
+                    entity_type: ci.entity_type.clone(),
+                    label: ci.label.clone(),
+                    property_names: ci.property_names.clone(),
+                })
+            }
+            GqlStatement::DropIndex(di) => {
+                Ok(LogicalPlan::DropIndex {
+                    name: di.name.clone(),
+                })
             }
             _ => Err(PlanError::UnsupportedStatement),
         }

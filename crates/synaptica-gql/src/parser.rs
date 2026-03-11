@@ -261,7 +261,7 @@ impl Parser {
             Token::Detach => self.parse_delete_statement(),
             Token::Remove => self.parse_remove_statement(),
             Token::Create => self.parse_create_statement(),
-            Token::Drop => self.parse_drop_graph_statement(),
+            Token::Drop => self.parse_drop_statement(),
             _ => Err(self.error(format!("unexpected token {:?}", self.peek()))),
         }
     }
@@ -482,13 +482,76 @@ impl Parser {
 
     fn parse_create_statement(&mut self) -> Result<GqlStatement, ParseError> {
         self.expect(&Token::Create)?;
-        self.expect(&Token::Graph)?;
-        if self.peek() == &Token::Type {
-            self.advance();
-            self.parse_create_graph_type_rest()
-        } else {
-            self.parse_create_graph_rest()
+        match self.peek() {
+            Token::Unique | Token::Index => self.parse_create_index_rest(false),
+            Token::Graph => {
+                self.advance(); // consume Graph
+                if self.peek() == &Token::Type {
+                    self.advance();
+                    self.parse_create_graph_type_rest()
+                } else {
+                    self.parse_create_graph_rest()
+                }
+            }
+            _ => Err(self.error(format!("expected GRAPH, INDEX, or UNIQUE after CREATE, found {:?}", self.peek()))),
         }
+    }
+
+    /// Parse: CREATE [UNIQUE] INDEX [IF NOT EXISTS] name FOR (v:Label) ON (v.prop1, ...)
+    fn parse_create_index_rest(&mut self, _from_unique: bool) -> Result<GqlStatement, ParseError> {
+        let unique = if self.peek() == &Token::Unique {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        self.expect(&Token::Index)?;
+        let if_not_exists = self.parse_if_not_exists()?;
+        let name = self.expect_ident_or_keyword()?;
+
+        // FOR (v:Label) — the entity pattern
+        self.expect(&Token::For)?;
+        self.expect(&Token::LParen)?;
+        let _var = self.expect_ident_or_keyword()?;
+        let (entity_type, label) = if self.peek() == &Token::Colon {
+            self.advance();
+            let lbl = self.expect_ident_or_keyword()?;
+            ("node".to_string(), Some(lbl))
+        } else {
+            ("node".to_string(), None)
+        };
+        self.expect(&Token::RParen)?;
+
+        // ON (prop1, prop2, ...)
+        self.expect(&Token::On)?;
+        self.expect(&Token::LParen)?;
+        let mut property_names = Vec::new();
+        loop {
+            // Accept "v.prop" or just "prop"
+            let first = self.expect_ident_or_keyword()?;
+            let prop = if self.peek() == &Token::Dot {
+                self.advance();
+                self.expect_ident_or_keyword()?
+            } else {
+                first
+            };
+            property_names.push(prop);
+            if self.peek() == &Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(&Token::RParen)?;
+
+        Ok(GqlStatement::CreateIndex(CreateIndexStatement {
+            name,
+            unique,
+            entity_type,
+            label,
+            property_names,
+            if_not_exists,
+        }))
     }
 
     fn parse_create_graph_rest(&mut self) -> Result<GqlStatement, ParseError> {
@@ -517,15 +580,23 @@ impl Parser {
         }))
     }
 
-    fn parse_drop_graph_statement(&mut self) -> Result<GqlStatement, ParseError> {
+    fn parse_drop_statement(&mut self) -> Result<GqlStatement, ParseError> {
         self.expect(&Token::Drop)?;
-        self.expect(&Token::Graph)?;
-        let if_exists = self.parse_if_exists()?;
-        let name = self.expect_ident()?;
-        Ok(GqlStatement::DropGraph(DropGraphStatement {
-            name,
-            if_exists,
-        }))
+        match self.peek() {
+            Token::Index => {
+                self.advance();
+                let if_exists = self.parse_if_exists()?;
+                let name = self.expect_ident_or_keyword()?;
+                Ok(GqlStatement::DropIndex(DropIndexStatement { name, if_exists }))
+            }
+            Token::Graph => {
+                self.advance();
+                let if_exists = self.parse_if_exists()?;
+                let name = self.expect_ident()?;
+                Ok(GqlStatement::DropGraph(DropGraphStatement { name, if_exists }))
+            }
+            _ => Err(self.error(format!("expected GRAPH or INDEX after DROP, found {:?}", self.peek()))),
+        }
     }
 
     fn parse_if_not_exists(&mut self) -> Result<bool, ParseError> {

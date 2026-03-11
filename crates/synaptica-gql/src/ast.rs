@@ -46,6 +46,10 @@ pub enum GqlStatement {
     With(WithStatement),
     /// Composite query with set operations (UNION, INTERSECT, EXCEPT).
     CompositeQuery(CompositeQueryStatement),
+    /// `CREATE INDEX` – create a property index.
+    CreateIndex(CreateIndexStatement),
+    /// `DROP INDEX` – drop a property index.
+    DropIndex(DropIndexStatement),
 }
 
 /// A `MATCH` statement with an optional graph reference, graph pattern, and clauses.
@@ -197,6 +201,24 @@ pub struct CompositeQueryStatement {
     pub order_by: Option<OrderByClause>,
     /// Optional trailing `LIMIT` / `OFFSET`.
     pub limit_offset: Option<LimitOffsetClause>,
+}
+
+/// `CREATE [UNIQUE] INDEX name FOR (v:Label) ON (v.prop1, v.prop2)`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CreateIndexStatement {
+    pub name: String,
+    pub unique: bool,
+    pub entity_type: String,
+    pub label: Option<String>,
+    pub property_names: Vec<String>,
+    pub if_not_exists: bool,
+}
+
+/// `DROP INDEX name [IF EXISTS]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DropIndexStatement {
+    pub name: String,
+    pub if_exists: bool,
 }
 
 // ---------------------------------------------------------------------------

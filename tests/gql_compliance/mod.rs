@@ -1740,4 +1740,195 @@ mod regression_tests {
             vec![Value::String("new".into())]
         );
     }
+
+    // =======================================================================
+    // Index support tests
+    // =======================================================================
+
+    #[test]
+    fn create_and_drop_index_via_gql() {
+        let tg = empty_graph();
+        let rs = execute_query(&tg, "CREATE INDEX idx_name FOR (n:Person) ON (n.name)");
+        assert_eq!(rs.len(), 1);
+        let result = column_values(&rs, "result");
+        assert!(result[0].as_str().unwrap().contains("idx_name"));
+
+        let rs2 = execute_query(&tg, "DROP INDEX idx_name");
+        assert_eq!(rs2.len(), 1);
+        let result2 = column_values(&rs2, "result");
+        assert!(result2[0].as_str().unwrap().contains("dropped"));
+    }
+
+    #[test]
+    fn create_unique_index() {
+        let tg = empty_graph();
+        let rs = execute_query(&tg, "CREATE UNIQUE INDEX idx_email FOR (n:User) ON (n.email)");
+        assert_eq!(rs.len(), 1);
+        let result = column_values(&rs, "result");
+        assert!(result[0].as_str().unwrap().contains("idx_email"));
+    }
+
+    #[test]
+    fn index_scan_accelerates_equality_filter() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'Alice', age: 30})");
+        execute_query(&tg, "INSERT (:Person {name: 'Bob', age: 35})");
+        execute_query(&tg, "INSERT (:Person {name: 'Carol', age: 28})");
+
+        execute_query(&tg, "CREATE INDEX idx_name FOR (n:Person) ON (n.name)");
+
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.name = 'Bob' RETURN n.name, n.age",
+        );
+        assert_eq!(rs.len(), 1);
+        assert_eq!(column_values(&rs, "n.name"), vec![Value::String("Bob".into())]);
+        assert_eq!(column_values(&rs, "n.age"), vec![Value::Integer(35)]);
+    }
+
+    #[test]
+    fn index_scan_with_composite_index() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'Alice', city: 'NYC'})");
+        execute_query(&tg, "INSERT (:Person {name: 'Alice', city: 'LA'})");
+        execute_query(&tg, "INSERT (:Person {name: 'Bob', city: 'NYC'})");
+
+        execute_query(&tg, "CREATE INDEX idx_name_city FOR (n:Person) ON (n.name, n.city)");
+
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.name = 'Alice' AND n.city = 'NYC' RETURN n.name, n.city",
+        );
+        assert_eq!(rs.len(), 1);
+        assert_eq!(column_values(&rs, "n.name"), vec![Value::String("Alice".into())]);
+        assert_eq!(column_values(&rs, "n.city"), vec![Value::String("NYC".into())]);
+    }
+
+    #[test]
+    fn index_maintained_on_insert() {
+        let tg = empty_graph();
+        execute_query(&tg, "CREATE INDEX idx_name FOR (n:Person) ON (n.name)");
+
+        execute_query(&tg, "INSERT (:Person {name: 'Diana', age: 40})");
+        execute_query(&tg, "INSERT (:Person {name: 'Eve', age: 25})");
+
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.name = 'Diana' RETURN n.name, n.age",
+        );
+        assert_eq!(rs.len(), 1);
+        assert_eq!(column_values(&rs, "n.age"), vec![Value::Integer(40)]);
+    }
+
+    #[test]
+    fn index_maintained_on_delete() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'Alice', age: 30})");
+        execute_query(&tg, "INSERT (:Person {name: 'Bob', age: 35})");
+        execute_query(&tg, "CREATE INDEX idx_name FOR (n:Person) ON (n.name)");
+
+        execute_query(&tg, "MATCH (n:Person) WHERE n.name = 'Bob' DETACH DELETE n");
+
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.name = 'Bob' RETURN n.name",
+        );
+        assert_eq!(rs.len(), 0);
+    }
+
+    #[test]
+    fn index_maintained_on_set() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'Alice', age: 30})");
+        execute_query(&tg, "CREATE INDEX idx_name FOR (n:Person) ON (n.name)");
+
+        execute_query(&tg, "MATCH (n:Person) WHERE n.name = 'Alice' SET n.name = 'Alicia'");
+
+        let rs1 = execute_query(&tg, "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.name");
+        assert_eq!(rs1.len(), 0);
+
+        let rs2 = execute_query(&tg, "MATCH (n:Person) WHERE n.name = 'Alicia' RETURN n.name");
+        assert_eq!(rs2.len(), 1);
+    }
+
+    #[test]
+    fn index_with_remaining_predicate() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'Alice', age: 30})");
+        execute_query(&tg, "INSERT (:Person {name: 'Alice', age: 50})");
+        execute_query(&tg, "CREATE INDEX idx_name FOR (n:Person) ON (n.name)");
+
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.name = 'Alice' AND n.age > 40 RETURN n.name, n.age",
+        );
+        assert_eq!(rs.len(), 1);
+        assert_eq!(column_values(&rs, "n.age"), vec![Value::Integer(50)]);
+    }
+
+    #[test]
+    fn index_backfills_existing_data() {
+        let tg = empty_graph();
+        execute_query(&tg, "INSERT (:Person {name: 'Alice', age: 30})");
+        execute_query(&tg, "INSERT (:Person {name: 'Bob', age: 35})");
+        execute_query(&tg, "INSERT (:Person {name: 'Carol', age: 28})");
+
+        execute_query(&tg, "CREATE INDEX idx_name FOR (n:Person) ON (n.name)");
+
+        let rs = execute_query(&tg, "MATCH (n:Person) WHERE n.name = 'Carol' RETURN n.age");
+        assert_eq!(rs.len(), 1);
+        assert_eq!(column_values(&rs, "n.age"), vec![Value::Integer(28)]);
+    }
+
+    #[test]
+    fn parse_create_index_syntax() {
+        let program = parse("CREATE INDEX idx_test FOR (n:Person) ON (n.name)").unwrap();
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            GqlStatement::CreateIndex(ci) => {
+                assert_eq!(ci.name, "idx_test");
+                assert!(!ci.unique);
+                assert_eq!(ci.label, Some("Person".to_string()));
+                assert_eq!(ci.property_names, vec!["name".to_string()]);
+            }
+            _ => panic!("expected CreateIndex"),
+        }
+    }
+
+    #[test]
+    fn parse_create_unique_index_syntax() {
+        let program = parse("CREATE UNIQUE INDEX idx_email FOR (n:User) ON (n.email)").unwrap();
+        match &program.statements[0] {
+            GqlStatement::CreateIndex(ci) => {
+                assert_eq!(ci.name, "idx_email");
+                assert!(ci.unique);
+                assert_eq!(ci.label, Some("User".to_string()));
+            }
+            _ => panic!("expected CreateIndex"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_index_syntax() {
+        let program = parse("DROP INDEX idx_test").unwrap();
+        match &program.statements[0] {
+            GqlStatement::DropIndex(di) => {
+                assert_eq!(di.name, "idx_test");
+                assert!(!di.if_exists);
+            }
+            _ => panic!("expected DropIndex"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_index_if_exists_syntax() {
+        let program = parse("DROP INDEX IF EXISTS idx_test").unwrap();
+        match &program.statements[0] {
+            GqlStatement::DropIndex(di) => {
+                assert_eq!(di.name, "idx_test");
+                assert!(di.if_exists);
+            }
+            _ => panic!("expected DropIndex"),
+        }
+    }
 }

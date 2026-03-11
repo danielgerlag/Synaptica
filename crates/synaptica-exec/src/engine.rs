@@ -3,9 +3,10 @@ use crate::operators::ExecutionContext;
 use crate::result::{Record, ResultSet};
 use synaptica_core::graph::{Edge, GraphId, Label, Node, NodeId};
 use synaptica_core::types::Value;
-use synaptica_gql::ast::{Direction, Expression, SortDirection};
+use synaptica_gql::ast::{Direction, Expression, SortDirection, BinaryOp, Literal};
 use synaptica_gql::planner::LogicalPlan;
 use synaptica_storage::engine::StorageEngine;
+use synaptica_storage::index::{IndexDefinition, IndexEntityType, IndexManager};
 use std::cmp::Ordering;
 use std::fmt;
 use uuid::Uuid;
@@ -65,7 +66,8 @@ impl<'a> ExecutionEngine<'a> {
             storage: self.storage,
             graph_id: *graph_id,
         };
-        self.execute_node(plan, &ctx)
+        let optimized = self.optimize(plan, &ctx);
+        self.execute_node(&optimized, &ctx)
     }
 
     fn execute_node(
@@ -133,6 +135,21 @@ impl<'a> ExecutionEngine<'a> {
             LogicalPlan::Distinct { input } => {
                 let rs = self.execute_node(input, ctx)?;
                 self.exec_distinct(rs)
+            }
+            LogicalPlan::IndexScan {
+                index_name, labels, variable, lookup_properties,
+                lookup_values, remaining_predicate,
+            } => {
+                self.exec_index_scan(
+                    index_name, labels, variable, lookup_properties,
+                    lookup_values, remaining_predicate, ctx,
+                )
+            }
+            LogicalPlan::CreateIndex { name, unique, entity_type, label, property_names } => {
+                self.exec_create_index(name, *unique, entity_type, label.as_deref(), property_names, ctx)
+            }
+            LogicalPlan::DropIndex { name } => {
+                self.exec_drop_index(name, ctx)
             }
             _ => Err(ExecError::NotImplemented(format!(
                 "{:?}",
@@ -735,6 +752,9 @@ impl<'a> ExecutionEngine<'a> {
         }
         ctx.storage.put_node(&node)?;
 
+        // Maintain indexes
+        self.index_node_on_write(&node, ctx);
+
         let mut rs = ResultSet::new(vec!["__node_id".to_string()]);
         rs.add_record(vec![Value::String(node.id.0.to_string())]);
         Ok(rs)
@@ -901,6 +921,10 @@ impl<'a> ExecutionEngine<'a> {
                     if seen.insert(id.clone()) {
                         let nid = NodeId(Uuid::parse_str(id)
                             .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?);
+                        // Unindex before deleting
+                        if let Ok(node) = ctx.storage.get_node(&ctx.graph_id, &nid) {
+                            self.unindex_node_on_delete(&node, ctx);
+                        }
                         ctx.storage.delete_node(&ctx.graph_id, &nid)
                             .map_err(|e| ExecError::Internal(e.to_string()))?;
                         deleted += 1;
@@ -929,7 +953,6 @@ impl<'a> ExecutionEngine<'a> {
         for record in &rs.records {
             let val = evaluate(value_expr, record)?;
 
-            // If a target variable is specified, only modify that node
             if let Some(tgt) = target {
                 if let Some(node_val) = record.get(tgt) {
                     if let Value::Node { ref id, .. } = node_val {
@@ -937,23 +960,27 @@ impl<'a> ExecutionEngine<'a> {
                             .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?);
                         let mut node = ctx.storage.get_node(&ctx.graph_id, &nid)
                             .map_err(|e| ExecError::Internal(e.to_string()))?;
+                        // Unindex old value, update, re-index
+                        self.unindex_node_on_delete(&node, ctx);
                         node.properties.insert(property.to_string(), val.clone());
                         ctx.storage.put_node(&node)
                             .map_err(|e| ExecError::Internal(e.to_string()))?;
+                        self.index_node_on_write(&node, ctx);
                         modified += 1;
                     }
                 }
             } else {
-                // Fallback: modify all nodes in the record
                 for rv in &record.values {
                     if let Value::Node { ref id, .. } = rv {
                         let nid = NodeId(Uuid::parse_str(id)
                             .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?);
                         let mut node = ctx.storage.get_node(&ctx.graph_id, &nid)
                             .map_err(|e| ExecError::Internal(e.to_string()))?;
+                        self.unindex_node_on_delete(&node, ctx);
                         node.properties.insert(property.to_string(), val.clone());
                         ctx.storage.put_node(&node)
                             .map_err(|e| ExecError::Internal(e.to_string()))?;
+                        self.index_node_on_write(&node, ctx);
                         modified += 1;
                     }
                 }
@@ -991,7 +1018,409 @@ impl<'a> ExecutionEngine<'a> {
         Ok(result)
     }
 
-    // -- CallProcedure ------------------------------------------------------
+    // -- IndexScan ----------------------------------------------------------
+
+    fn exec_index_scan(
+        &self,
+        index_name: &str,
+        labels: &[String],
+        variable: &Option<String>,
+        _lookup_properties: &[String],
+        lookup_values: &[Expression],
+        remaining_predicate: &Option<Expression>,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<ResultSet, ExecError> {
+        let mgr = IndexManager::new(ctx.storage.raw_db().clone());
+        let indexes = mgr.list_indexes(&ctx.graph_id)
+            .map_err(|e| ExecError::StorageError(e.to_string()))?;
+        let def = indexes.iter().find(|d| d.name == index_name)
+            .ok_or_else(|| ExecError::Internal(format!("index '{}' not found", index_name)))?;
+
+        // Evaluate lookup values
+        let empty_record = Record::new(vec![], vec![]);
+        let values: Vec<Value> = lookup_values
+            .iter()
+            .map(|e| evaluate(e, &empty_record))
+            .collect::<Result<_, _>>()?;
+
+        let node_ids = mgr.lookup(def, &values)
+            .map_err(|e| ExecError::StorageError(e.to_string()))?;
+
+        // Load nodes by ID
+        let mut nodes = Vec::with_capacity(node_ids.len());
+        for nid in &node_ids {
+            match ctx.storage.get_node(&ctx.graph_id, nid) {
+                Ok(node) => {
+                    if labels.is_empty() || labels.iter().all(|l| node.has_label(l)) {
+                        nodes.push(node);
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+
+        // Build result set (same as exec_scan)
+        let mut key_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for node in &nodes {
+            for key in node.properties.keys() {
+                key_set.insert(key.clone());
+            }
+        }
+        let all_keys: Vec<String> = key_set.into_iter().collect();
+
+        let mut columns = vec!["__node_id".to_string(), "__labels".to_string()];
+        columns.extend(all_keys.clone());
+        if let Some(var) = variable {
+            columns.push(var.clone());
+            for key in &all_keys {
+                columns.push(format!("{}.{}", var, key));
+            }
+        }
+
+        let mut rs = ResultSet::new(columns);
+        for node in &nodes {
+            let mut values: Vec<Value> = Vec::new();
+            let id_str = node.id.0.to_string();
+            values.push(Value::String(id_str.clone()));
+            let label_list: Vec<Value> = node.labels.iter().map(|l| Value::String(l.0.clone())).collect();
+            values.push(Value::List(label_list));
+            for key in &all_keys {
+                values.push(node.properties.get(key).cloned().unwrap_or(Value::Null));
+            }
+            if let Some(_var) = variable {
+                let node_val = Value::Node {
+                    id: id_str,
+                    labels: node.labels.iter().map(|l| l.0.clone()).collect(),
+                    properties: node.properties.clone(),
+                };
+                values.push(node_val);
+                for key in &all_keys {
+                    values.push(node.properties.get(key).cloned().unwrap_or(Value::Null));
+                }
+            }
+            rs.add_record(values);
+        }
+
+        // Apply remaining predicate if any
+        if let Some(pred) = remaining_predicate {
+            rs = self.exec_filter(rs, pred)?;
+        }
+
+        Ok(rs)
+    }
+
+    // -- CreateIndex / DropIndex ---------------------------------------------
+
+    fn exec_create_index(
+        &self,
+        name: &str,
+        unique: bool,
+        entity_type: &str,
+        label: Option<&str>,
+        property_names: &[String],
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<ResultSet, ExecError> {
+        let et = match entity_type {
+            "edge" => IndexEntityType::Edge,
+            _ => IndexEntityType::Node,
+        };
+        let def = IndexDefinition {
+            name: name.to_string(),
+            graph_id: ctx.graph_id,
+            entity_type: et.clone(),
+            property_names: property_names.to_vec(),
+            unique,
+        };
+
+        let mgr = IndexManager::new(ctx.storage.raw_db().clone());
+        mgr.create_index(&def)
+            .map_err(|e| ExecError::StorageError(e.to_string()))?;
+
+        // Backfill: index existing nodes that match the label
+        if et == IndexEntityType::Node {
+            let nodes = if let Some(lbl) = label {
+                ctx.storage.scan_nodes_by_label(&ctx.graph_id, &Label::new(lbl))
+                    .map_err(|e| ExecError::StorageError(e.to_string()))?
+            } else {
+                ctx.storage.scan_nodes(&ctx.graph_id)
+                    .map_err(|e| ExecError::StorageError(e.to_string()))?
+            };
+            for node in &nodes {
+                // Only index nodes that have at least one of the indexed properties
+                if property_names.iter().any(|p| node.properties.contains_key(p)) {
+                    let _ = mgr.index_node(&def, node);
+                }
+            }
+        }
+
+        let mut rs = ResultSet::new(vec!["result".to_string()]);
+        rs.add_record(vec![Value::String(format!("Index '{}' created ({} properties)", name, property_names.len()))]);
+        Ok(rs)
+    }
+
+    fn exec_drop_index(
+        &self,
+        name: &str,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<ResultSet, ExecError> {
+        let mgr = IndexManager::new(ctx.storage.raw_db().clone());
+        mgr.drop_index(&ctx.graph_id, name)
+            .map_err(|e| ExecError::StorageError(e.to_string()))?;
+
+        let mut rs = ResultSet::new(vec!["result".to_string()]);
+        rs.add_record(vec![Value::String(format!("Index '{}' dropped", name))]);
+        Ok(rs)
+    }
+
+    // -- Optimizer ----------------------------------------------------------
+
+    /// Optimize a plan tree: detect Filter(Scan) patterns where an index
+    /// can serve the equality predicates and replace with IndexScan.
+    fn optimize(&self, plan: &LogicalPlan, ctx: &ExecutionContext<'_>) -> LogicalPlan {
+        match plan {
+            LogicalPlan::Filter {
+                input,
+                predicate,
+            } => {
+                let optimized_input = self.optimize(input, ctx);
+                if let LogicalPlan::Scan { labels, variable, .. } = &optimized_input {
+                    if let Some(idx_scan) = self.try_index_scan(labels, variable, predicate, ctx) {
+                        return idx_scan;
+                    }
+                }
+                LogicalPlan::Filter {
+                    input: Box::new(optimized_input),
+                    predicate: predicate.clone(),
+                }
+            }
+            // Recurse into plan children
+            LogicalPlan::Project { input, expressions, aliases } => LogicalPlan::Project {
+                input: Box::new(self.optimize(input, ctx)),
+                expressions: expressions.clone(),
+                aliases: aliases.clone(),
+            },
+            LogicalPlan::Sort { input, order_by } => LogicalPlan::Sort {
+                input: Box::new(self.optimize(input, ctx)),
+                order_by: order_by.clone(),
+            },
+            LogicalPlan::Limit { input, count, offset } => LogicalPlan::Limit {
+                input: Box::new(self.optimize(input, ctx)),
+                count: *count,
+                offset: *offset,
+            },
+            LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
+                input: Box::new(self.optimize(input, ctx)),
+            },
+            LogicalPlan::Expand { input, edge_label, direction, target_labels, edge_variable, target_variable } => LogicalPlan::Expand {
+                input: Box::new(self.optimize(input, ctx)),
+                edge_label: edge_label.clone(),
+                direction: direction.clone(),
+                target_labels: target_labels.clone(),
+                edge_variable: edge_variable.clone(),
+                target_variable: target_variable.clone(),
+            },
+            LogicalPlan::DeleteNode { input } => LogicalPlan::DeleteNode {
+                input: Box::new(self.optimize(input, ctx)),
+            },
+            LogicalPlan::SetProperty { input, target, property, value } => LogicalPlan::SetProperty {
+                input: Box::new(self.optimize(input, ctx)),
+                target: target.clone(),
+                property: property.clone(),
+                value: value.clone(),
+            },
+            LogicalPlan::Join { left, right } => LogicalPlan::Join {
+                left: Box::new(self.optimize(left, ctx)),
+                right: Box::new(self.optimize(right, ctx)),
+            },
+            // Leaf nodes — return as-is
+            other => other.clone(),
+        }
+    }
+
+    /// Try to convert a Filter(Scan) into an IndexScan by finding an index
+    /// that matches one of the equality predicates.
+    fn try_index_scan(
+        &self,
+        labels: &[String],
+        variable: &Option<String>,
+        predicate: &Expression,
+        ctx: &ExecutionContext<'_>,
+    ) -> Option<LogicalPlan> {
+        let mgr = IndexManager::new(ctx.storage.raw_db().clone());
+        let indexes = mgr.list_indexes(&ctx.graph_id).ok()?;
+        if indexes.is_empty() {
+            return None;
+        }
+
+        // Extract equality predicates from the WHERE clause
+        let mut eq_predicates = Vec::new();
+        let mut other_predicates = Vec::new();
+        Self::extract_eq_predicates(predicate, variable, &mut eq_predicates, &mut other_predicates);
+
+        if eq_predicates.is_empty() {
+            return None;
+        }
+
+        // Try to find an index that covers one or more of the equality predicates
+        for idx_def in &indexes {
+            if idx_def.entity_type != IndexEntityType::Node {
+                continue;
+            }
+            // Check if ALL indexed properties have an equality predicate
+            let mut all_covered = true;
+            let mut lookup_values = Vec::new();
+            let mut used_indices = Vec::new();
+
+            for prop_name in &idx_def.property_names {
+                let found = eq_predicates.iter().enumerate().find(|(_, (p, _))| p == prop_name);
+                if let Some((i, (_, val_expr))) = found {
+                    lookup_values.push(val_expr.clone());
+                    used_indices.push(i);
+                } else {
+                    all_covered = false;
+                    break;
+                }
+            }
+
+            if all_covered && !lookup_values.is_empty() {
+                // Build remaining predicate from unused eq predicates + other predicates
+                let mut remaining_parts: Vec<Expression> = Vec::new();
+                for (i, (prop, val)) in eq_predicates.iter().enumerate() {
+                    if !used_indices.contains(&i) {
+                        remaining_parts.push(Self::rebuild_eq_predicate(variable, prop, val));
+                    }
+                }
+                remaining_parts.extend(other_predicates.clone());
+
+                let remaining = if remaining_parts.is_empty() {
+                    None
+                } else {
+                    Some(remaining_parts.into_iter().reduce(|a, b| Expression::BinaryOp {
+                        left: Box::new(a),
+                        op: BinaryOp::And,
+                        right: Box::new(b),
+                    }).unwrap())
+                };
+
+                return Some(LogicalPlan::IndexScan {
+                    index_name: idx_def.name.clone(),
+                    labels: labels.to_vec(),
+                    variable: variable.clone(),
+                    lookup_properties: idx_def.property_names.clone(),
+                    lookup_values,
+                    remaining_predicate: remaining,
+                });
+            }
+        }
+
+        None
+    }
+
+    /// Extract `variable.property = literal` equality predicates from an AND chain.
+    fn extract_eq_predicates(
+        expr: &Expression,
+        variable: &Option<String>,
+        eq_out: &mut Vec<(String, Expression)>,
+        other_out: &mut Vec<Expression>,
+    ) {
+        match expr {
+            Expression::BinaryOp { left, op: BinaryOp::And, right } => {
+                Self::extract_eq_predicates(left, variable, eq_out, other_out);
+                Self::extract_eq_predicates(right, variable, eq_out, other_out);
+            }
+            Expression::BinaryOp { left, op: BinaryOp::Eq, right } => {
+                // Check for patterns: v.prop = literal OR prop = literal
+                if let Some(prop) = Self::extract_property_name(left, variable) {
+                    if Self::is_literal_expr(right) {
+                        eq_out.push((prop, *right.clone()));
+                        return;
+                    }
+                }
+                if let Some(prop) = Self::extract_property_name(right, variable) {
+                    if Self::is_literal_expr(left) {
+                        eq_out.push((prop, *left.clone()));
+                        return;
+                    }
+                }
+                other_out.push(expr.clone());
+            }
+            _ => {
+                other_out.push(expr.clone());
+            }
+        }
+    }
+
+    /// Extract property name from `v.prop` or just `prop` in column format.
+    fn extract_property_name(expr: &Expression, variable: &Option<String>) -> Option<String> {
+        match expr {
+            Expression::PropertyAccess { object, property } => {
+                if let Expression::Identifier(var) = object.as_ref() {
+                    if variable.as_ref().map_or(true, |v| v == var) {
+                        return Some(property.clone());
+                    }
+                }
+                None
+            }
+            Expression::Identifier(name) => {
+                // Could be "v.prop" column format
+                if let Some(var) = variable {
+                    if let Some(prop) = name.strip_prefix(&format!("{}.", var)) {
+                        return Some(prop.to_string());
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn is_literal_expr(expr: &Expression) -> bool {
+        matches!(expr, Expression::Literal(_))
+    }
+
+    fn rebuild_eq_predicate(variable: &Option<String>, prop: &str, val: &Expression) -> Expression {
+        let left = if let Some(var) = variable {
+            Expression::PropertyAccess {
+                object: Box::new(Expression::Identifier(var.clone())),
+                property: prop.to_string(),
+            }
+        } else {
+            Expression::Identifier(prop.to_string())
+        };
+        Expression::BinaryOp {
+            left: Box::new(left),
+            op: BinaryOp::Eq,
+            right: Box::new(val.clone()),
+        }
+    }
+
+    // -- Index maintenance helpers ------------------------------------------
+
+    fn index_node_on_write(&self, node: &Node, ctx: &ExecutionContext<'_>) {
+        let mgr = IndexManager::new(ctx.storage.raw_db().clone());
+        if let Ok(indexes) = mgr.list_indexes(&ctx.graph_id) {
+            for def in &indexes {
+                if def.entity_type == IndexEntityType::Node
+                    && def.property_names.iter().any(|p| node.properties.contains_key(p))
+                {
+                    let _ = mgr.index_node(def, node);
+                }
+            }
+        }
+    }
+
+    fn unindex_node_on_delete(&self, node: &Node, ctx: &ExecutionContext<'_>) {
+        let mgr = IndexManager::new(ctx.storage.raw_db().clone());
+        if let Ok(indexes) = mgr.list_indexes(&ctx.graph_id) {
+            for def in &indexes {
+                if def.entity_type == IndexEntityType::Node
+                    && def.property_names.iter().any(|p| node.properties.contains_key(p))
+                {
+                    let _ = mgr.unindex_node(def, node);
+                }
+            }
+        }
+    }
 
     fn exec_call_procedure(
         &self,
