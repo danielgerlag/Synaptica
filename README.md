@@ -43,6 +43,7 @@ A high-performance distributed graph database written in Rust, implementing the 
 | `synaptica-cluster` | Raft consensus, range partitioning, distributed transactions |
 | `synaptica-server` | gRPC server, configuration, metrics |
 | `synaptica-cli` | Interactive REPL client |
+| `synaptica-mcp` | MCP server for AI agent integration (stdio & remote) |
 
 ## Quick Start
 
@@ -220,6 +221,25 @@ Synaptica supports distributed deployment with:
 - **Local Reads** — Queries execute on any node for low-latency reads
 
 See **[CLUSTER.md](CLUSTER.md)** for the full cluster operations guide, including setup instructions, configuration reference, failure scenarios, and recovery time benchmarks.
+
+## AI Agent Integration (MCP)
+
+Synaptica can be used as a tool by AI agents (Claude, Copilot, Cursor, etc.) via the [Model Context Protocol](https://modelcontextprotocol.io).
+
+```json
+{
+  "mcpServers": {
+    "synaptica": {
+      "command": "synaptica-mcp",
+      "args": ["--data-dir", "./my-graph"]
+    }
+  }
+}
+```
+
+Tools available: `query`, `get_schema`, `list_labels`, `list_indexes`, `create_index`, `drop_index`, `health`, `cluster_status`.
+
+See **[MCP.md](MCP.md)** for setup instructions, remote mode configuration, and the full tool reference.
 
 ## Development
 

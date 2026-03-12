@@ -1,0 +1,46 @@
+[package]
+name = "synaptica-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "synaptica-mcp"
+path = "src/main.rs"
+
+[dependencies]
+synaptica-core = { workspace = true }
+synaptica-storage = { workspace = true }
+synaptica-gql = { workspace = true }
+synaptica-exec = { workspace = true }
+
+# MCP SDK
+rmcp = { version = "1", features = ["server", "macros", "transport-io"] }
+schemars = "1"
+
+# Async
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# gRPC client (for remote backend)
+tonic = { workspace = true }
+prost = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Utilities
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+hex = "0.4"
+
+[build-dependencies]
+tonic-build = { workspace = true }
