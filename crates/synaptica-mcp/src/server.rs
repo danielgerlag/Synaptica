@@ -45,6 +45,18 @@ pub struct CreateGraphParams {
     pub name: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct BackupParams {
+    /// Label for this backup (e.g. 'before-migration', 'daily')
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteBackupParams {
+    /// Name of the backup to delete
+    pub name: String,
+}
+
 #[tool_router]
 impl SynapticaMcpServer {
     pub fn new(backend: Arc<dyn SynapticaBackend>) -> Self {
@@ -279,6 +291,53 @@ impl SynapticaMcpServer {
                     format!("Graph '{}' created successfully.", params.name)
                 }
             }
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    /// Create a point-in-time backup of the entire database.
+    /// The backup is a RocksDB checkpoint — near-instant, consistent snapshot.
+    #[tool(name = "create_backup")]
+    async fn create_backup(
+        &self,
+        Parameters(params): Parameters<BackupParams>,
+    ) -> String {
+        let label = params.label.unwrap_or_else(|| "manual".to_string());
+        match self.backend.create_backup(&label).await {
+            Ok(msg) => msg,
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    /// List all available database backups with their labels, timestamps, and sizes.
+    #[tool(name = "list_backups")]
+    async fn list_backups(&self) -> String {
+        match self.backend.list_backups().await {
+            Ok(backups) => {
+                if backups.is_empty() {
+                    return "No backups found.".to_string();
+                }
+                let mut out = String::from("Backups:\n");
+                for b in &backups {
+                    out.push_str(&format!(
+                        "  {} (label: {}, created: {}, size: {} bytes)\n",
+                        b.name, b.label, b.created_at, b.size_bytes
+                    ));
+                }
+                out
+            }
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    /// Delete a specific backup by name.
+    #[tool(name = "delete_backup")]
+    async fn delete_backup(
+        &self,
+        Parameters(params): Parameters<DeleteBackupParams>,
+    ) -> String {
+        match self.backend.delete_backup(&params.name).await {
+            Ok(msg) => msg,
             Err(e) => format!("Error: {}", e),
         }
     }

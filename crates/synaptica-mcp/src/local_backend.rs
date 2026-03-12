@@ -281,4 +281,62 @@ impl SynapticaBackend for LocalBackend {
             })
             .collect())
     }
+
+    async fn create_backup(&self, label: &str) -> anyhow::Result<String> {
+        let label = if label.is_empty() { "manual" } else { label };
+        let now = chrono::Utc::now();
+        let backup_name = format!("{}_{}", now.format("%Y%m%d_%H%M%S"), label);
+        // Store backups alongside the data directory
+        let backup_dir = std::path::PathBuf::from("backups").join(&backup_name);
+        std::fs::create_dir_all(&backup_dir)?;
+        self.storage.create_backup(&backup_dir)?;
+
+        let meta = serde_json::json!({
+            "label": label,
+            "created_at": now.to_rfc3339(),
+            "backup_name": backup_name,
+        });
+        std::fs::write(
+            backup_dir.join("backup_meta.json"),
+            serde_json::to_string_pretty(&meta)?,
+        )?;
+        Ok(format!("Backup '{}' created", backup_name))
+    }
+
+    async fn list_backups(&self) -> anyhow::Result<Vec<BackupSummary>> {
+        let backups_dir = std::path::PathBuf::from("backups");
+        let mut backups = Vec::new();
+        if backups_dir.exists() {
+            for entry in std::fs::read_dir(&backups_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let meta_path = path.join("backup_meta.json");
+                if !meta_path.exists() {
+                    continue;
+                }
+                let meta: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&meta_path)?)?;
+                backups.push(BackupSummary {
+                    name: entry.file_name().to_string_lossy().to_string(),
+                    label: meta["label"].as_str().unwrap_or("").to_string(),
+                    created_at: meta["created_at"].as_str().unwrap_or("").to_string(),
+                    size_bytes: 0,
+                });
+            }
+        }
+        backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(backups)
+    }
+
+    async fn delete_backup(&self, name: &str) -> anyhow::Result<String> {
+        let backup_path = std::path::PathBuf::from("backups").join(name);
+        if !backup_path.exists() {
+            anyhow::bail!("Backup '{}' not found", name);
+        }
+        std::fs::remove_dir_all(&backup_path)?;
+        Ok(format!("Backup '{}' deleted", name))
+    }
 }

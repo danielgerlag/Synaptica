@@ -268,6 +268,41 @@ Synaptica supports distributed deployment with:
 
 See **[CLUSTER.md](CLUSTER.md)** for the full cluster operations guide, including setup instructions, configuration reference, failure scenarios, and recovery time benchmarks.
 
+## Backup & Restore
+
+Synaptica provides point-in-time backup using RocksDB's Checkpoint API (near-instant, consistent snapshots via hard-linked files) and portable GQL-based export/import.
+
+### CLI Commands
+
+```bash
+# Create a named backup snapshot
+:backup before-migration
+
+# List all backups
+:backups
+
+# Delete a backup
+:delete-backup 20250312_105700_before-migration
+
+# Export a graph as GQL INSERT statements
+:export social_dump.gql social
+
+# Import GQL statements into a graph
+:import social_dump.gql social
+```
+
+### Programmatic (gRPC)
+
+The server exposes `CreateBackup`, `ListBackups`, `DeleteBackup`, `ExportGraph` (server streaming), and `ImportGraph` RPCs. See `proto/client.proto` for message definitions.
+
+### MCP Tools
+
+AI agents can manage backups via MCP:
+
+- **`create_backup`** — Create a point-in-time snapshot (label parameter)
+- **`list_backups`** — List all backups with timestamps and sizes
+- **`delete_backup`** — Delete a backup by name
+
 ## AI Agent Integration (MCP)
 
 Synaptica can be used as a tool by AI agents (Claude, Copilot, Cursor, etc.) via the [Model Context Protocol](https://modelcontextprotocol.io).
@@ -283,7 +318,7 @@ Synaptica can be used as a tool by AI agents (Claude, Copilot, Cursor, etc.) via
 }
 ```
 
-Tools available: `query`, `get_schema`, `list_labels`, `list_indexes`, `create_index`, `drop_index`, `health`, `cluster_status`.
+Tools available: `query`, `get_schema`, `list_labels`, `list_indexes`, `create_index`, `drop_index`, `health`, `cluster_status`, `list_graphs`, `create_graph`, `create_backup`, `list_backups`, `delete_backup`.
 
 See **[MCP.md](MCP.md)** for setup instructions, remote mode configuration, and the full tool reference.
 

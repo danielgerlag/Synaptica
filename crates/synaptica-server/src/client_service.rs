@@ -1,6 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use synaptica_core::graph::GraphId;
@@ -21,20 +23,22 @@ pub mod proto {
 
 use proto::synaptica_service_server::SynapticaService;
 use proto::{
-    gql_value, BeginTransactionRequest, BeginTransactionResponse, ClusterStatusRequest,
-    ClusterStatusResponse, CommitTransactionRequest, CommitTransactionResponse,
-    CreateIndexRequest, CreateIndexResponse, DropIndexRequest, DropIndexResponse,
-    GetMetricsRequest, GetMetricsResponse, GetSchemaRequest, GetSchemaResponse, GqlList,
-    GqlMap, GqlValue, HealthRequest, HealthResponse, IndexInfo, LabelInfo, LabelSchema,
-    ListGraphsRequest, ListGraphsResponse, GraphInfo,
-    ListIndexesRequest, ListIndexesResponse, ListLabelsRequest, ListLabelsResponse,
-    QueryRequest, QueryResponse, QueryStats, RollbackTransactionRequest,
-    RollbackTransactionResponse, Row,
+    gql_value, BackupInfo, BeginTransactionRequest, BeginTransactionResponse,
+    ClusterStatusRequest, ClusterStatusResponse, CommitTransactionRequest,
+    CommitTransactionResponse, CreateBackupRequest, CreateBackupResponse, CreateIndexRequest,
+    CreateIndexResponse, DeleteBackupRequest, DeleteBackupResponse, DropIndexRequest,
+    DropIndexResponse, ExportChunk, ExportGraphRequest, GetMetricsRequest, GetMetricsResponse,
+    GetSchemaRequest, GetSchemaResponse, GqlList, GqlMap, GqlValue, GraphInfo, HealthRequest,
+    HealthResponse, ImportGraphRequest, ImportGraphResponse, IndexInfo, LabelInfo, LabelSchema,
+    ListBackupsRequest, ListBackupsResponse, ListGraphsRequest, ListGraphsResponse,
+    ListIndexesRequest, ListIndexesResponse, ListLabelsRequest, ListLabelsResponse, QueryRequest,
+    QueryResponse, QueryStats, RollbackTransactionRequest, RollbackTransactionResponse, Row,
 };
 
 pub struct SynapticaServiceImpl {
     pub storage: Arc<StorageEngine>,
     pub default_graph_id: GraphId,
+    pub data_dir: String,
     /// Raft instance for cluster mode; None for standalone.
     pub raft: Option<SynapticaRaft>,
     /// State machine applier for executing replicated mutations.
@@ -484,6 +488,210 @@ impl SynapticaService for SynapticaServiceImpl {
 
         Ok(Response::new(ListGraphsResponse { graphs }))
     }
+
+    async fn create_backup(
+        &self,
+        request: Request<CreateBackupRequest>,
+    ) -> Result<Response<CreateBackupResponse>, Status> {
+        let label = request.into_inner().label;
+        let label = if label.is_empty() {
+            "manual".to_string()
+        } else {
+            label
+        };
+
+        let now = chrono::Utc::now();
+        let backup_name = format!("{}_{}", now.format("%Y%m%d_%H%M%S"), label);
+        let backup_dir = PathBuf::from(&self.data_dir).join("backups").join(&backup_name);
+
+        std::fs::create_dir_all(&backup_dir)
+            .map_err(|e| Status::internal(format!("failed to create backup dir: {}", e)))?;
+
+        self.storage
+            .create_backup(&backup_dir)
+            .map_err(|e| Status::internal(format!("backup failed: {}", e)))?;
+
+        // Write metadata
+        let meta = serde_json::json!({
+            "label": label,
+            "created_at": now.to_rfc3339(),
+            "backup_name": backup_name,
+        });
+        let meta_path = backup_dir.join("backup_meta.json");
+        std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap())
+            .map_err(|e| Status::internal(format!("failed to write backup metadata: {}", e)))?;
+
+        Ok(Response::new(CreateBackupResponse {
+            backup_name,
+            created_at: now.to_rfc3339(),
+        }))
+    }
+
+    async fn list_backups(
+        &self,
+        _request: Request<ListBackupsRequest>,
+    ) -> Result<Response<ListBackupsResponse>, Status> {
+        let backups_dir = PathBuf::from(&self.data_dir).join("backups");
+        let mut backups = Vec::new();
+
+        if backups_dir.exists() {
+            let entries = std::fs::read_dir(&backups_dir)
+                .map_err(|e| Status::internal(format!("failed to read backups dir: {}", e)))?;
+
+            for entry in entries {
+                let entry = entry
+                    .map_err(|e| Status::internal(format!("failed to read entry: {}", e)))?;
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let meta_path = path.join("backup_meta.json");
+                if !meta_path.exists() {
+                    continue;
+                }
+                let meta_str = std::fs::read_to_string(&meta_path)
+                    .map_err(|e| Status::internal(format!("failed to read meta: {}", e)))?;
+                let meta: serde_json::Value = serde_json::from_str(&meta_str)
+                    .map_err(|e| Status::internal(format!("failed to parse meta: {}", e)))?;
+
+                // Calculate directory size
+                let size = dir_size(&path).unwrap_or(0);
+
+                backups.push(BackupInfo {
+                    name: entry.file_name().to_string_lossy().to_string(),
+                    label: meta["label"].as_str().unwrap_or("").to_string(),
+                    created_at: meta["created_at"].as_str().unwrap_or("").to_string(),
+                    size_bytes: size,
+                });
+            }
+        }
+
+        backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(Response::new(ListBackupsResponse { backups }))
+    }
+
+    async fn delete_backup(
+        &self,
+        request: Request<DeleteBackupRequest>,
+    ) -> Result<Response<DeleteBackupResponse>, Status> {
+        let name = request.into_inner().backup_name;
+        let backup_path = PathBuf::from(&self.data_dir).join("backups").join(&name);
+
+        if !backup_path.exists() {
+            return Ok(Response::new(DeleteBackupResponse {
+                success: false,
+                message: format!("backup '{}' not found", name),
+            }));
+        }
+
+        std::fs::remove_dir_all(&backup_path)
+            .map_err(|e| Status::internal(format!("failed to delete backup: {}", e)))?;
+
+        Ok(Response::new(DeleteBackupResponse {
+            success: true,
+            message: format!("backup '{}' deleted", name),
+        }))
+    }
+
+    type ExportGraphStream = ReceiverStream<Result<ExportChunk, Status>>;
+
+    async fn export_graph(
+        &self,
+        request: Request<ExportGraphRequest>,
+    ) -> Result<Response<Self::ExportGraphStream>, Status> {
+        let graph_name = request.into_inner().graph_name;
+        let graph_id = self.resolve_graph_id(&graph_name);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let storage = self.storage.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let mut buf = Vec::new();
+            match storage.export_graph(&graph_id, &mut buf) {
+                Ok(_) => {
+                    let data = String::from_utf8_lossy(&buf).to_string();
+                    // Send in chunks of ~64KB
+                    for chunk in data.as_bytes().chunks(65536) {
+                        let chunk_str = String::from_utf8_lossy(chunk).to_string();
+                        let _ = tx.blocking_send(Ok(ExportChunk { data: chunk_str }));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(Status::internal(format!("export failed: {}", e))));
+                }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn import_graph(
+        &self,
+        request: Request<ImportGraphRequest>,
+    ) -> Result<Response<ImportGraphResponse>, Status> {
+        let inner = request.into_inner();
+        let graph_name = inner.graph_name;
+        let gql_data = inner.gql_data;
+        let graph_id = self.resolve_graph_id(&graph_name);
+
+        let mut executed = 0i64;
+
+        for line in gql_data.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("//") || line.starts_with("--") {
+                continue;
+            }
+
+            match parser::parse(line) {
+                Ok(program) => {
+                    let planner = QueryPlanner::new();
+                    match planner.plan(&program) {
+                        Ok(plan) => {
+                            let engine = ExecutionEngine::new(&self.storage);
+                            match engine.execute_plan(&plan, &graph_id) {
+                                Ok(_) => executed += 1,
+                                Err(e) => {
+                                    return Ok(Response::new(ImportGraphResponse {
+                                        statements_executed: executed,
+                                        error: Some(format!(
+                                            "execution error at statement {}: {}",
+                                            executed + 1,
+                                            e
+                                        )),
+                                    }));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            return Ok(Response::new(ImportGraphResponse {
+                                statements_executed: executed,
+                                error: Some(format!(
+                                    "planning error at statement {}: {}",
+                                    executed + 1,
+                                    e
+                                )),
+                            }));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Ok(Response::new(ImportGraphResponse {
+                        statements_executed: executed,
+                        error: Some(format!(
+                            "parse error at statement {}: {}",
+                            executed + 1,
+                            e
+                        )),
+                    }));
+                }
+            }
+        }
+
+        Ok(Response::new(ImportGraphResponse {
+            statements_executed: executed,
+            error: None,
+        }))
+    }
 }
 
 impl SynapticaServiceImpl {
@@ -705,4 +913,21 @@ fn value_to_proto(value: &Value) -> GqlValue {
         _ => Some(gql_value::Kind::StringValue(format!("{}", value))),
     };
     GqlValue { kind }
+}
+
+/// Recursively compute the total size of a directory in bytes.
+fn dir_size(path: &std::path::Path) -> std::io::Result<u64> {
+    let mut total = 0;
+    if path.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let p = entry.path();
+            if p.is_dir() {
+                total += dir_size(&p)?;
+            } else {
+                total += entry.metadata()?.len();
+            }
+        }
+    }
+    Ok(total)
 }

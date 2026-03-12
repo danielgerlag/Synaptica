@@ -172,6 +172,34 @@ Returns Raft cluster information (remote mode only).
 | Multi-agent access | Single process only | Multiple agents can share one server |
 | Best for | Personal knowledge graphs, local dev | Shared team databases, production |
 
+## Backup Tools
+
+### `create_backup`
+
+Create a point-in-time snapshot of the entire database using RocksDB's Checkpoint API. Near-instant and consistent.
+
+**Parameters:**
+- `label` (optional) — A descriptive label for the backup (e.g. `"before-migration"`, `"daily"`)
+
+**Returns:** Confirmation message with the backup name and timestamp.
+
+### `list_backups`
+
+List all available database backups with their labels, creation timestamps, and sizes.
+
+**Parameters:** None
+
+**Returns:** Formatted list of backups.
+
+### `delete_backup`
+
+Delete a specific backup by name.
+
+**Parameters:**
+- `name` (required) — The backup name (as shown by `list_backups`)
+
+**Returns:** Confirmation message.
+
 ---
 
 ## GQL Quick Reference for Agents

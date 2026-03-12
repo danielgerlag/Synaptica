@@ -2350,6 +2350,7 @@ dependencies = [
  "prometheus",
  "prost",
  "serde",
+ "serde_json",
  "synaptica-cluster",
  "synaptica-core",
  "synaptica-exec",

@@ -44,6 +44,21 @@ service SynapticaService {
 
   // List all available graphs.
   rpc ListGraphs(ListGraphsRequest) returns (ListGraphsResponse);
+
+  // Create a backup (RocksDB checkpoint).
+  rpc CreateBackup(CreateBackupRequest) returns (CreateBackupResponse);
+
+  // List available backups.
+  rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse);
+
+  // Delete a backup.
+  rpc DeleteBackup(DeleteBackupRequest) returns (DeleteBackupResponse);
+
+  // Export a graph as GQL statements.
+  rpc ExportGraph(ExportGraphRequest) returns (stream ExportChunk);
+
+  // Import GQL statements into a graph.
+  rpc ImportGraph(ImportGraphRequest) returns (ImportGraphResponse);
 }
 
 message QueryRequest {
@@ -243,4 +258,53 @@ message ListGraphsResponse {
 message GraphInfo {
   string name = 1;
   string id = 2;
+}
+
+message CreateBackupRequest {
+  string label = 1;
+}
+
+message CreateBackupResponse {
+  string backup_name = 1;
+  string created_at = 2;
+}
+
+message ListBackupsRequest {}
+
+message ListBackupsResponse {
+  repeated BackupInfo backups = 1;
+}
+
+message BackupInfo {
+  string name = 1;
+  string label = 2;
+  string created_at = 3;
+  uint64 size_bytes = 4;
+}
+
+message DeleteBackupRequest {
+  string backup_name = 1;
+}
+
+message DeleteBackupResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ExportGraphRequest {
+  string graph_name = 1;
+}
+
+message ExportChunk {
+  string data = 1;
+}
+
+message ImportGraphRequest {
+  string graph_name = 1;
+  string gql_data = 2;
+}
+
+message ImportGraphResponse {
+  int64 statements_executed = 1;
+  optional string error = 2;
 }

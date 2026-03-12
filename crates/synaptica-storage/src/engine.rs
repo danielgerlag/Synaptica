@@ -1,11 +1,13 @@
 use crate::cf::ColumnFamilies;
 use crate::encoding;
 use rocksdb::{
-    BoundColumnFamily, DBWithThreadMode, MultiThreaded, Options, WriteBatch,
+    checkpoint::Checkpoint, BoundColumnFamily, DBWithThreadMode, MultiThreaded, Options, WriteBatch,
 };
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use synaptica_core::graph::{Edge, GraphId, GraphMeta, Label, Node};
+use synaptica_core::types::Value;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -27,6 +29,12 @@ pub enum StorageError {
 
     #[error("unique constraint violation: {0}")]
     UniqueViolation(String),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("backup error: {0}")]
+    Backup(String),
 }
 
 pub type StorageResult<T> = Result<T, StorageError>;
@@ -177,6 +185,81 @@ impl StorageEngine {
         let meta_key = encoding::encode_graph_meta_key(graph_id);
         self.db.delete_cf(&meta_cf, &meta_key)?;
         Ok(())
+    }
+
+    // --- Backup & Export Operations ---
+
+    /// Create a RocksDB checkpoint (point-in-time snapshot) at the given path.
+    pub fn create_backup(&self, backup_path: &Path) -> StorageResult<()> {
+        let checkpoint = Checkpoint::new(&*self.db)?;
+        checkpoint.create_checkpoint(backup_path)?;
+        Ok(())
+    }
+
+    /// Scan all edges in a graph (unlimited).
+    pub fn scan_edges(&self, graph_id: &GraphId) -> StorageResult<Vec<Edge>> {
+        let cf = self.cf(ColumnFamilies::EDGES)?;
+        let prefix = encoding::encode_edge_prefix(graph_id);
+        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
+
+        let mut edges = Vec::new();
+        for item in iter {
+            let (key, value) = item?;
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            let edge: Edge =
+                encoding::deserialize_value(&value).map_err(StorageError::Deserialization)?;
+            edges.push(edge);
+        }
+        Ok(edges)
+    }
+
+    /// Export a graph as GQL INSERT statements to a writer.
+    /// Nodes are exported first, then edges. Node IDs are preserved via
+    /// a synthetic `_id` property so edges can reference them on import.
+    pub fn export_graph<W: Write>(
+        &self,
+        graph_id: &GraphId,
+        writer: &mut W,
+    ) -> StorageResult<usize> {
+        let mut count = 0;
+
+        // Export nodes with a synthetic _id property for edge matching
+        let nodes = self.scan_nodes(graph_id)?;
+        for node in &nodes {
+            let labels: String = node
+                .labels
+                .iter()
+                .map(|l| format!(":{}", l.0))
+                .collect::<String>();
+            let mut props = node.properties.clone();
+            props.insert("_id".to_string(), Value::String(node.id.0.to_string()));
+            let props_str = format_properties_for_export(&props);
+            writeln!(writer, "INSERT ({} {})", labels, props_str)?;
+            count += 1;
+        }
+
+        // Export edges using MATCH on the _id property
+        let edges = self.scan_edges(graph_id)?;
+        for edge in &edges {
+            let props_str = if edge.properties.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", format_properties_for_export(&edge.properties))
+            };
+            writeln!(
+                writer,
+                "MATCH (a {{_id: '{src}'}}), (b {{_id: '{tgt}'}}) INSERT (a)-[:{label}{props}]->(b)",
+                src = edge.source.0,
+                tgt = edge.target.0,
+                label = edge.label.0,
+                props = props_str,
+            )?;
+            count += 1;
+        }
+
+        Ok(count)
     }
 
     // --- Node Operations ---
@@ -540,6 +623,18 @@ impl StorageEngine {
         DBWithThreadMode::<MultiThreaded>::destroy(&opts, path)?;
         Ok(())
     }
+}
+
+/// Format a properties map as a GQL property literal `{key: value, ...}`.
+fn format_properties_for_export(props: &std::collections::BTreeMap<String, Value>) -> String {
+    if props.is_empty() {
+        return String::new();
+    }
+    let pairs: Vec<String> = props
+        .iter()
+        .map(|(k, v)| format!("{}: {}", k, v))
+        .collect();
+    format!("{{{}}}", pairs.join(", "))
 }
 
 fn num_cpus() -> i32 {

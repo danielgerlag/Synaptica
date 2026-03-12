@@ -5,7 +5,10 @@ pub mod proto {
 use anyhow::Result;
 use clap::Parser;
 use proto::synaptica_service_client::SynapticaServiceClient;
-use proto::{GqlValue, HealthRequest, ListGraphsRequest, QueryRequest};
+use proto::{
+    CreateBackupRequest, DeleteBackupRequest, ExportGraphRequest, GqlValue, HealthRequest,
+    ImportGraphRequest, ListBackupsRequest, ListGraphsRequest, QueryRequest,
+};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::path::PathBuf;
@@ -165,14 +168,34 @@ fn print_csv(columns: &[String], rows: &[proto::Row]) {
 
 fn print_help() {
     println!("Synaptica CLI commands:");
-    println!("  :help          Show this help message");
-    println!("  :status        Show server health status");
-    println!("  :graphs        List all available graphs");
-    println!("  :quit, :exit   Exit the CLI");
+    println!("  :help                    Show this help message");
+    println!("  :status                  Show server health status");
+    println!("  :graphs                  List all available graphs");
+    println!("  :backup [label]          Create a backup snapshot");
+    println!("  :backups                 List available backups");
+    println!("  :delete-backup <name>    Delete a backup");
+    println!("  :export <file> [graph]   Export a graph to GQL file");
+    println!("  :import <file> [graph]   Import GQL statements from file");
+    println!("  :quit, :exit             Exit the CLI");
     println!();
     println!("Enter any GQL query to execute it.");
     println!("Use \\ at end of line for multi-line input.");
     println!("Use --graph <NAME> flag to select a graph (default: 'default').");
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 #[tokio::main]
@@ -253,6 +276,146 @@ async fn main() -> Result<()> {
                             }
                             Err(e) => {
                                 eprintln!("Error: {}", e.message());
+                            }
+                        }
+                    }
+                    query if query.starts_with(":backup") && !query.starts_with(":backups") => {
+                        let label = query.strip_prefix(":backup").unwrap().trim();
+                        let label = if label.is_empty() { "manual" } else { label };
+                        match client
+                            .create_backup(CreateBackupRequest {
+                                label: label.to_string(),
+                            })
+                            .await
+                        {
+                            Ok(resp) => {
+                                let r = resp.into_inner();
+                                println!("Backup created: {} (at {})", r.backup_name, r.created_at);
+                            }
+                            Err(e) => eprintln!("Error: {}", e.message()),
+                        }
+                    }
+                    ":backups" => {
+                        match client.list_backups(ListBackupsRequest {}).await {
+                            Ok(resp) => {
+                                let backups = resp.into_inner().backups;
+                                if backups.is_empty() {
+                                    println!("No backups found.");
+                                } else {
+                                    println!(
+                                        "{:<35} {:<15} {:<25} {}",
+                                        "NAME", "LABEL", "CREATED", "SIZE"
+                                    );
+                                    println!("{}", "-".repeat(85));
+                                    for b in &backups {
+                                        let size = format_bytes(b.size_bytes);
+                                        println!(
+                                            "{:<35} {:<15} {:<25} {}",
+                                            b.name, b.label, b.created_at, size
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => eprintln!("Error: {}", e.message()),
+                        }
+                    }
+                    query if query.starts_with(":delete-backup") => {
+                        let name = query.strip_prefix(":delete-backup").unwrap().trim();
+                        if name.is_empty() {
+                            eprintln!("Usage: :delete-backup <name>");
+                        } else {
+                            match client
+                                .delete_backup(DeleteBackupRequest {
+                                    backup_name: name.to_string(),
+                                })
+                                .await
+                            {
+                                Ok(resp) => {
+                                    let r = resp.into_inner();
+                                    println!("{}", r.message);
+                                }
+                                Err(e) => eprintln!("Error: {}", e.message()),
+                            }
+                        }
+                    }
+                    query if query.starts_with(":export") => {
+                        let args: Vec<&str> =
+                            query.strip_prefix(":export").unwrap().trim().split_whitespace().collect();
+                        if args.is_empty() {
+                            eprintln!("Usage: :export <file> [graph]");
+                        } else {
+                            let file = args[0];
+                            let graph = if args.len() > 1 {
+                                args[1].to_string()
+                            } else {
+                                cli.graph.clone()
+                            };
+                            match client
+                                .export_graph(ExportGraphRequest {
+                                    graph_name: graph.clone(),
+                                })
+                                .await
+                            {
+                                Ok(resp) => {
+                                    let mut stream = resp.into_inner();
+                                    let mut data = String::new();
+                                    while let Ok(Some(chunk)) = stream.message().await {
+                                        data.push_str(&chunk.data);
+                                    }
+                                    match std::fs::write(file, &data) {
+                                        Ok(_) => {
+                                            let lines = data.lines().count();
+                                            println!(
+                                                "Exported {} statements from graph '{}' to {}",
+                                                lines, graph, file
+                                            );
+                                        }
+                                        Err(e) => eprintln!("Error writing file: {}", e),
+                                    }
+                                }
+                                Err(e) => eprintln!("Error: {}", e.message()),
+                            }
+                        }
+                    }
+                    query if query.starts_with(":import") => {
+                        let args: Vec<&str> =
+                            query.strip_prefix(":import").unwrap().trim().split_whitespace().collect();
+                        if args.is_empty() {
+                            eprintln!("Usage: :import <file> [graph]");
+                        } else {
+                            let file = args[0];
+                            let graph = if args.len() > 1 {
+                                args[1].to_string()
+                            } else {
+                                cli.graph.clone()
+                            };
+                            match std::fs::read_to_string(file) {
+                                Ok(data) => {
+                                    match client
+                                        .import_graph(ImportGraphRequest {
+                                            graph_name: graph.clone(),
+                                            gql_data: data,
+                                        })
+                                        .await
+                                    {
+                                        Ok(resp) => {
+                                            let r = resp.into_inner();
+                                            if let Some(err) = r.error {
+                                                eprintln!(
+                                                    "Import error after {} statements: {}",
+                                                    r.statements_executed, err
+                                                );
+                                            } else {
+                                                println!(
+                                                    "Imported {} statements into graph '{}'",
+                                                    r.statements_executed, graph
+                                                );
+                                            }
+                                        }
+                                        Err(e) => eprintln!("Error: {}", e.message()),
+                                    }
+                                }
+                                Err(e) => eprintln!("Error reading file: {}", e),
                             }
                         }
                     }

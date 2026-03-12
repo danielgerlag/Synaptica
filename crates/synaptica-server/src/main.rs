@@ -134,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
     let svc = SynapticaServiceImpl {
         storage: node.storage.clone(),
         default_graph_id: node.default_graph_id,
+        data_dir: config.data_dir.clone(),
         raft: node.raft.clone(),
         applier: node.applier.clone(),
         node_id: node.node_id,

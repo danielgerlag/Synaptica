@@ -76,6 +76,15 @@ pub struct GraphSummary {
     pub id: String,
 }
 
+/// BackupSummary for MCP backup listing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupSummary {
+    pub name: String,
+    pub label: String,
+    pub created_at: String,
+    pub size_bytes: u64,
+}
+
 /// Abstraction over local embedded and remote gRPC backends.
 #[async_trait]
 pub trait SynapticaBackend: Send + Sync {
@@ -88,4 +97,7 @@ pub trait SynapticaBackend: Send + Sync {
     async fn health(&self) -> anyhow::Result<HealthInfo>;
     async fn cluster_status(&self) -> anyhow::Result<Option<ClusterInfo>>;
     async fn list_graphs(&self) -> anyhow::Result<Vec<GraphSummary>>;
+    async fn create_backup(&self, label: &str) -> anyhow::Result<String>;
+    async fn list_backups(&self) -> anyhow::Result<Vec<BackupSummary>>;
+    async fn delete_backup(&self, name: &str) -> anyhow::Result<String>;
 }

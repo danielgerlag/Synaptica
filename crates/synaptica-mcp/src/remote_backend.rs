@@ -9,8 +9,9 @@ mod proto {
 
 use proto::synaptica_service_client::SynapticaServiceClient;
 use proto::{
-    gql_value, CreateIndexRequest, DropIndexRequest, GetSchemaRequest, HealthRequest,
-    ListGraphsRequest, ListIndexesRequest, ListLabelsRequest, QueryRequest, ClusterStatusRequest,
+    gql_value, ClusterStatusRequest, CreateBackupRequest, CreateIndexRequest,
+    DeleteBackupRequest, DropIndexRequest, GetSchemaRequest, HealthRequest, ListBackupsRequest,
+    ListGraphsRequest, ListIndexesRequest, ListLabelsRequest, QueryRequest,
 };
 
 /// Remote backend — connects to a running Synaptica server via gRPC.
@@ -339,5 +340,52 @@ impl SynapticaBackend for RemoteBackend {
                 id: g.id,
             })
             .collect())
+    }
+
+    async fn create_backup(&self, label: &str) -> anyhow::Result<String> {
+        let mut client = self.client.clone();
+        let resp = client
+            .create_backup(CreateBackupRequest {
+                label: label.to_string(),
+            })
+            .await?
+            .into_inner();
+        Ok(format!(
+            "Backup '{}' created at {}",
+            resp.backup_name, resp.created_at
+        ))
+    }
+
+    async fn list_backups(&self) -> anyhow::Result<Vec<BackupSummary>> {
+        let mut client = self.client.clone();
+        let resp = client
+            .list_backups(ListBackupsRequest {})
+            .await?
+            .into_inner();
+        Ok(resp
+            .backups
+            .into_iter()
+            .map(|b| BackupSummary {
+                name: b.name,
+                label: b.label,
+                created_at: b.created_at,
+                size_bytes: b.size_bytes,
+            })
+            .collect())
+    }
+
+    async fn delete_backup(&self, name: &str) -> anyhow::Result<String> {
+        let mut client = self.client.clone();
+        let resp = client
+            .delete_backup(DeleteBackupRequest {
+                backup_name: name.to_string(),
+            })
+            .await?
+            .into_inner();
+        if resp.success {
+            Ok(resp.message)
+        } else {
+            anyhow::bail!(resp.message)
+        }
     }
 }
