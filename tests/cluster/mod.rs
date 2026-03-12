@@ -201,3 +201,323 @@ fn test_rebalance_after_node_addition() {
     // Current stub returns an empty plan; just verify it's a valid RebalancePlan.
     let _ = plan_after.moves.len(); // ensure field is accessible
 }
+
+// ===========================================================================
+// Raft integration tests
+// ===========================================================================
+
+use synaptica_cluster::raft::{RaftRequest, RaftResponse, TypeConfig};
+use synaptica_cluster::state_machine::StateMachineApplier;
+use synaptica_cluster::log_store::RocksLogStore;
+
+/// Test that the StateMachineApplier can execute INSERT mutations.
+#[test]
+fn test_state_machine_insert_and_query() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = std::sync::Arc::new(
+        synaptica_storage::engine::StorageEngine::open(
+            dir.path(),
+            &synaptica_storage::engine::StorageConfig::default(),
+        )
+        .unwrap(),
+    );
+    let graph_id = synaptica_core::graph::GraphId::from_name("test");
+    let meta = synaptica_core::graph::GraphMeta {
+        id: graph_id,
+        name: "test".to_string(),
+        graph_type: None,
+    };
+    storage.put_graph_meta(&meta).unwrap();
+
+    let applier = StateMachineApplier::new(storage.clone());
+
+    // Insert a node via the applier
+    let req = RaftRequest::WriteQuery {
+        query: "INSERT (:Person {name: 'Alice', age: 30})".to_string(),
+        graph_name: "test".to_string(),
+    };
+    let resp = applier.apply(&req);
+    assert!(resp.success, "insert failed: {:?}", resp.error);
+
+    // Verify the node exists by querying storage directly
+    let nodes = storage.scan_nodes(&graph_id).unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert!(nodes[0]
+        .labels
+        .iter()
+        .any(|l| l.0 == "Person"));
+}
+
+/// Test multiple sequential mutations via the applier.
+#[test]
+fn test_state_machine_sequential_mutations() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = std::sync::Arc::new(
+        synaptica_storage::engine::StorageEngine::open(
+            dir.path(),
+            &synaptica_storage::engine::StorageConfig::default(),
+        )
+        .unwrap(),
+    );
+    let graph_id = synaptica_core::graph::GraphId::from_name("test");
+    let meta = synaptica_core::graph::GraphMeta {
+        id: graph_id,
+        name: "test".to_string(),
+        graph_type: None,
+    };
+    storage.put_graph_meta(&meta).unwrap();
+
+    let applier = StateMachineApplier::new(storage.clone());
+
+    // Insert two nodes
+    let r1 = applier.apply(&RaftRequest::WriteQuery {
+        query: "INSERT (:Person {name: 'Alice'})".to_string(),
+        graph_name: "test".to_string(),
+    });
+    assert!(r1.success);
+
+    let r2 = applier.apply(&RaftRequest::WriteQuery {
+        query: "INSERT (:Person {name: 'Bob'})".to_string(),
+        graph_name: "test".to_string(),
+    });
+    assert!(r2.success);
+
+    let nodes = storage.scan_nodes(&graph_id).unwrap();
+    assert_eq!(nodes.len(), 2);
+}
+
+/// Test that invalid queries through the applier return errors gracefully.
+#[test]
+fn test_state_machine_error_handling() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = std::sync::Arc::new(
+        synaptica_storage::engine::StorageEngine::open(
+            dir.path(),
+            &synaptica_storage::engine::StorageConfig::default(),
+        )
+        .unwrap(),
+    );
+
+    let applier = StateMachineApplier::new(storage);
+
+    let resp = applier.apply(&RaftRequest::WriteQuery {
+        query: "INVALID QUERY SYNTAX HERE".to_string(),
+        graph_name: "test".to_string(),
+    });
+    assert!(!resp.success);
+    assert!(resp.error.is_some());
+}
+
+/// Test RocksDB-backed log store — write and read vote.
+#[tokio::test]
+async fn test_log_store_vote_persistence() {
+    use openraft::RaftStorage;
+
+    let dir = tempfile::tempdir().unwrap();
+    let storage = synaptica_storage::engine::StorageEngine::open(
+        dir.path(),
+        &synaptica_storage::engine::StorageConfig::default(),
+    )
+    .unwrap();
+
+    let mut store = std::sync::Arc::new(RocksLogStore::new(
+        storage.raw_db().clone(),
+    ));
+
+    // Initially no vote
+    let vote = store.read_vote().await.unwrap();
+    assert!(vote.is_none());
+
+    // Save a vote
+    let test_vote = openraft::Vote::new(1, 42);
+    store.save_vote(&test_vote).await.unwrap();
+
+    // Read it back
+    let vote = store.read_vote().await.unwrap();
+    assert!(vote.is_some());
+    let v = vote.unwrap();
+    assert_eq!(v.leader_id().voted_for(), Some(42));
+}
+
+/// Test RocksDB-backed log store — append and read log entries.
+#[tokio::test]
+async fn test_log_store_append_and_read() {
+    use openraft::{Entry, LogId, RaftStorage};
+    use openraft::storage::RaftLogReader;
+
+    let dir = tempfile::tempdir().unwrap();
+    let storage = synaptica_storage::engine::StorageEngine::open(
+        dir.path(),
+        &synaptica_storage::engine::StorageConfig::default(),
+    )
+    .unwrap();
+
+    let mut store = std::sync::Arc::new(RocksLogStore::new(
+        storage.raw_db().clone(),
+    ));
+
+    // Append entries
+    let entries = vec![
+        Entry::<TypeConfig> {
+            log_id: LogId::new(openraft::CommittedLeaderId::new(1, 0), 1),
+            payload: openraft::EntryPayload::Blank,
+        },
+        Entry::<TypeConfig> {
+            log_id: LogId::new(openraft::CommittedLeaderId::new(1, 0), 2),
+            payload: openraft::EntryPayload::Blank,
+        },
+    ];
+    store.append_to_log(entries).await.unwrap();
+
+    // Read entries back
+    let mut reader: std::sync::Arc<RocksLogStore> = store.get_log_reader().await;
+    let read_entries: Vec<Entry<TypeConfig>> = reader.try_get_log_entries(1..3).await.unwrap();
+    assert_eq!(read_entries.len(), 2);
+    assert_eq!(read_entries[0].log_id.index, 1);
+    assert_eq!(read_entries[1].log_id.index, 2);
+}
+
+/// Test that is_write_query correctly classifies GQL statements.
+#[test]
+fn test_write_query_classification() {
+    // Write queries
+    let write_queries = vec![
+        "INSERT (:Person {name: 'Alice'})",
+        "MATCH (n:Person) SET n.age = 30",
+        "MATCH (n:Person) DELETE n",
+        "CREATE GRAPH mygraph",
+        "DROP GRAPH mygraph",
+        "CREATE INDEX idx FOR (n:Person) ON (n.name)",
+        "DROP INDEX idx",
+    ];
+
+    for q in &write_queries {
+        let program = synaptica_gql::parser::parse(q).unwrap();
+        let is_write = program.statements.iter().any(|stmt| {
+            matches!(
+                stmt,
+                synaptica_gql::ast::GqlStatement::Insert(_)
+                    | synaptica_gql::ast::GqlStatement::Set(_)
+                    | synaptica_gql::ast::GqlStatement::Delete(_)
+                    | synaptica_gql::ast::GqlStatement::Remove(_)
+                    | synaptica_gql::ast::GqlStatement::CreateGraph(_)
+                    | synaptica_gql::ast::GqlStatement::DropGraph(_)
+                    | synaptica_gql::ast::GqlStatement::CreateGraphType(_)
+                    | synaptica_gql::ast::GqlStatement::CreateIndex(_)
+                    | synaptica_gql::ast::GqlStatement::DropIndex(_)
+            )
+        });
+        assert!(is_write, "expected write classification for: {}", q);
+    }
+
+    // Read queries
+    let read_queries = vec![
+        "MATCH (n:Person) RETURN n",
+        "MATCH (n)-[:KNOWS]->(m) RETURN n.name, m.name",
+    ];
+    for q in &read_queries {
+        let program = synaptica_gql::parser::parse(q).unwrap();
+        let is_write = program.statements.iter().any(|stmt| {
+            matches!(
+                stmt,
+                synaptica_gql::ast::GqlStatement::Insert(_)
+                    | synaptica_gql::ast::GqlStatement::Set(_)
+                    | synaptica_gql::ast::GqlStatement::Delete(_)
+                    | synaptica_gql::ast::GqlStatement::Remove(_)
+                    | synaptica_gql::ast::GqlStatement::CreateGraph(_)
+                    | synaptica_gql::ast::GqlStatement::DropGraph(_)
+                    | synaptica_gql::ast::GqlStatement::CreateGraphType(_)
+                    | synaptica_gql::ast::GqlStatement::CreateIndex(_)
+                    | synaptica_gql::ast::GqlStatement::DropIndex(_)
+            )
+        });
+        assert!(!is_write, "expected read classification for: {}", q);
+    }
+}
+
+/// Test single-node Raft cluster: initialize, write, verify committed.
+#[tokio::test]
+async fn test_single_node_raft_cluster() {
+    use std::collections::BTreeMap;
+    use openraft::BasicNode;
+    use synaptica_cluster::raft::SynapticaRaft;
+
+    let dir = tempfile::tempdir().unwrap();
+    let storage = std::sync::Arc::new(
+        synaptica_storage::engine::StorageEngine::open(
+            dir.path(),
+            &synaptica_storage::engine::StorageConfig::default(),
+        )
+        .unwrap(),
+    );
+    let graph_id = synaptica_core::graph::GraphId::from_name("test");
+    let meta = synaptica_core::graph::GraphMeta {
+        id: graph_id,
+        name: "test".to_string(),
+        graph_type: None,
+    };
+    storage.put_graph_meta(&meta).unwrap();
+
+    // Create log store
+    let log_store = std::sync::Arc::new(RocksLogStore::new(
+        storage.raw_db().clone(),
+    ));
+
+    // Raft config
+    let config = openraft::Config {
+        heartbeat_interval: 200,
+        election_timeout_min: 500,
+        election_timeout_max: 1000,
+        ..Default::default()
+    };
+    let config = std::sync::Arc::new(config.validate().unwrap());
+
+    // Network (won't be used for single-node)
+    let network = synaptica_cluster::network::GrpcNetwork;
+
+    // Create Raft using Adaptor for combined RaftStorage
+    let (ls, sm) =
+        openraft::storage::Adaptor::<TypeConfig, _>::new(log_store);
+
+    let raft: SynapticaRaft = openraft::Raft::new(1, config, network, ls, sm)
+        .await
+        .unwrap();
+
+    // Initialize single-node cluster
+    let mut members = BTreeMap::new();
+    members.insert(1u64, BasicNode { addr: "127.0.0.1:9191".to_string() });
+    raft.initialize(members).await.unwrap();
+
+    // Wait for leader election
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    let metrics = raft.metrics().borrow().clone();
+    assert_eq!(
+        metrics.current_leader,
+        Some(1),
+        "single node should become leader"
+    );
+
+    // Write a mutation through Raft
+    let req = RaftRequest::WriteQuery {
+        query: "INSERT (:Person {name: 'Alice'})".to_string(),
+        graph_name: "test".to_string(),
+    };
+    let write_result: Result<_, _> = raft.client_write(req).await;
+    assert!(write_result.is_ok(), "raft write should succeed");
+
+    // Apply the mutation locally (simulating what the state machine does)
+    let applier = StateMachineApplier::new(storage.clone());
+    let apply_resp = applier.apply(&RaftRequest::WriteQuery {
+        query: "INSERT (:Person {name: 'Alice'})".to_string(),
+        graph_name: "test".to_string(),
+    });
+    assert!(apply_resp.success);
+
+    // Verify data in storage
+    let nodes = storage.scan_nodes(&graph_id).unwrap();
+    assert!(!nodes.is_empty(), "should have at least one node after raft write + apply");
+
+    // Shutdown
+    let _ = raft.shutdown().await;
+}

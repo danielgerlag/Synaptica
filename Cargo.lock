@@ -2110,6 +2110,7 @@ name = "synaptica"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "openraft",
  "serde",
  "serde_json",
  "synaptica-cluster",
@@ -2118,6 +2119,7 @@ dependencies = [
  "synaptica-gql",
  "synaptica-storage",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2143,15 +2145,21 @@ dependencies = [
  "openraft",
  "parking_lot",
  "prost",
+ "rocksdb",
  "serde",
  "serde_json",
  "synaptica-core",
+ "synaptica-exec",
+ "synaptica-gql",
  "synaptica-storage",
  "synaptica-tx",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tonic",
+ "tonic-build",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2196,10 +2204,12 @@ name = "synaptica-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bincode",
  "chrono",
  "clap",
  "http",
  "lazy_static",
+ "openraft",
  "prometheus",
  "prost",
  "serde",

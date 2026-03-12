@@ -5,6 +5,8 @@ use tonic::{Request, Response, Status};
 
 use synaptica_core::graph::GraphId;
 use synaptica_core::types::Value;
+use synaptica_cluster::raft::{RaftRequest, SynapticaRaft};
+use synaptica_cluster::state_machine::StateMachineApplier;
 use synaptica_exec::engine::ExecutionEngine;
 use synaptica_gql::parser;
 use synaptica_gql::planner::QueryPlanner;
@@ -32,6 +34,12 @@ use proto::{
 pub struct SynapticaServiceImpl {
     pub storage: Arc<StorageEngine>,
     pub default_graph_id: GraphId,
+    /// Raft instance for cluster mode; None for standalone.
+    pub raft: Option<SynapticaRaft>,
+    /// State machine applier for executing replicated mutations.
+    pub applier: Option<Arc<StateMachineApplier>>,
+    /// This node's ID in the cluster.
+    pub node_id: Option<u64>,
 }
 
 /// RAII guard for ACTIVE_CONNECTIONS gauge — decrements on drop.
@@ -62,7 +70,7 @@ impl SynapticaService for SynapticaServiceImpl {
 
         tracing::info!(query = %req.query, graph = %graph_name, "executing query");
 
-        // Parse
+        // Parse to determine if this is a write query
         let program = match parser::parse(&req.query) {
             Ok(p) => p,
             Err(e) => {
@@ -79,82 +87,17 @@ impl SynapticaService for SynapticaServiceImpl {
             }
         };
 
-        // Plan
-        let planner = QueryPlanner::new();
-        let plan = match planner.plan(&program) {
-            Ok(p) => p,
-            Err(e) => {
-                let elapsed = start.elapsed().as_secs_f64();
-                QUERY_DURATION.with_label_values(&[&graph_name]).observe(elapsed);
-                QUERIES_TOTAL.with_label_values(&["error"]).inc();
-                tracing::error!(error = %e, elapsed_ms = %start.elapsed().as_millis(), "plan error");
-                return Ok(Response::new(QueryResponse {
-                    columns: vec![],
-                    rows: vec![],
-                    stats: None,
-                    error: Some(format!("plan error: {}", e)),
-                }));
+        // In cluster mode, route writes through Raft consensus
+        if let Some(ref raft) = self.raft {
+            if is_write_query(&program) {
+                return self
+                    .execute_write_via_raft(raft, &req.query, &graph_name, start)
+                    .await;
             }
-        };
+        }
 
-        // Execute
-        let engine = ExecutionEngine::new(&self.storage);
-        let result_set = match engine.execute_plan(&plan, &self.default_graph_id) {
-            Ok(rs) => rs,
-            Err(e) => {
-                let elapsed = start.elapsed().as_secs_f64();
-                QUERY_DURATION.with_label_values(&[&graph_name]).observe(elapsed);
-                QUERIES_TOTAL.with_label_values(&["error"]).inc();
-                tracing::error!(error = %e, elapsed_ms = %start.elapsed().as_millis(), "execution error");
-                return Ok(Response::new(QueryResponse {
-                    columns: vec![],
-                    rows: vec![],
-                    stats: None,
-                    error: Some(format!("execution error: {}", e)),
-                }));
-            }
-        };
-
-        let elapsed = start.elapsed();
-        QUERY_DURATION
-            .with_label_values(&[&graph_name])
-            .observe(elapsed.as_secs_f64());
-        QUERIES_TOTAL.with_label_values(&["success"]).inc();
-
-        let elapsed_ms = std::cmp::max(1, elapsed.as_millis() as i64);
-        let rows_returned = result_set.records.len() as i64;
-
-        tracing::info!(
-            rows = rows_returned,
-            elapsed_ms = elapsed_ms,
-            "query completed"
-        );
-
-        let columns = result_set.columns.clone();
-        let rows: Vec<Row> = result_set
-            .records
-            .iter()
-            .map(|record| Row {
-                values: record.values.iter().map(value_to_proto).collect(),
-            })
-            .collect();
-
-        let stats = QueryStats {
-            nodes_created: 0,
-            nodes_deleted: 0,
-            edges_created: 0,
-            edges_deleted: 0,
-            properties_set: 0,
-            rows_returned,
-            execution_time_ms: elapsed_ms,
-        };
-
-        Ok(Response::new(QueryResponse {
-            columns,
-            rows,
-            stats: Some(stats),
-            error: None,
-        }))
+        // Read path (or standalone mode): execute locally
+        self.execute_local(&program, &graph_name, start)
     }
 
     type ExecuteQueryStreamStream =
@@ -211,18 +154,56 @@ impl SynapticaService for SynapticaServiceImpl {
         &self,
         _request: Request<ClusterStatusRequest>,
     ) -> Result<Response<ClusterStatusResponse>, Status> {
-        Ok(Response::new(ClusterStatusResponse {
-            node_id: "standalone".to_string(),
-            role: "leader".to_string(),
-            leader_id: "standalone".to_string(),
-            nodes: vec![proto::ClusterNode {
-                id: "standalone".to_string(),
-                address: "localhost".to_string(),
+        if let Some(ref raft) = self.raft {
+            let metrics = raft.metrics().borrow().clone();
+            let node_id = self.node_id.unwrap_or(0);
+            let leader_id = metrics.current_leader.unwrap_or(0);
+            let role = if metrics.current_leader == Some(node_id) {
+                "leader"
+            } else {
+                "follower"
+            };
+
+            // Build node list from membership config
+            let mut nodes = Vec::new();
+            if let Some(joint) = metrics
+                .membership_config
+                .membership()
+                .get_joint_config()
+                .first()
+            {
+                for &nid in joint.iter() {
+                    let node_role = if nid == leader_id { "leader" } else { "follower" };
+                    nodes.push(proto::ClusterNode {
+                        id: nid.to_string(),
+                        address: String::new(),
+                        role: node_role.to_string(),
+                        is_healthy: true,
+                    });
+                }
+            }
+
+            Ok(Response::new(ClusterStatusResponse {
+                node_id: node_id.to_string(),
+                role: role.to_string(),
+                leader_id: leader_id.to_string(),
+                nodes,
+                partition_count: 1,
+            }))
+        } else {
+            Ok(Response::new(ClusterStatusResponse {
+                node_id: "standalone".to_string(),
                 role: "leader".to_string(),
-                is_healthy: true,
-            }],
-            partition_count: 1,
-        }))
+                leader_id: "standalone".to_string(),
+                nodes: vec![proto::ClusterNode {
+                    id: "standalone".to_string(),
+                    address: "localhost".to_string(),
+                    role: "leader".to_string(),
+                    is_healthy: true,
+                }],
+                partition_count: 1,
+            }))
+        }
     }
 
     #[tracing::instrument(skip(self, request), fields(graph = ?self.default_graph_id))]
@@ -455,6 +436,177 @@ impl SynapticaService for SynapticaServiceImpl {
 
         Ok(Response::new(GetMetricsResponse { gauges, counters }))
     }
+}
+
+impl SynapticaServiceImpl {
+    /// Execute a query locally (reads, or standalone mode writes).
+    fn execute_local(
+        &self,
+        program: &synaptica_gql::ast::GqlProgram,
+        graph_name: &str,
+        start: std::time::Instant,
+    ) -> Result<Response<QueryResponse>, Status> {
+        let planner = QueryPlanner::new();
+        let plan = match planner.plan(program) {
+            Ok(p) => p,
+            Err(e) => {
+                let elapsed = start.elapsed().as_secs_f64();
+                QUERY_DURATION.with_label_values(&[graph_name]).observe(elapsed);
+                QUERIES_TOTAL.with_label_values(&["error"]).inc();
+                return Ok(Response::new(QueryResponse {
+                    columns: vec![],
+                    rows: vec![],
+                    stats: None,
+                    error: Some(format!("plan error: {}", e)),
+                }));
+            }
+        };
+
+        let engine = ExecutionEngine::new(&self.storage);
+        let result_set = match engine.execute_plan(&plan, &self.default_graph_id) {
+            Ok(rs) => rs,
+            Err(e) => {
+                let elapsed = start.elapsed().as_secs_f64();
+                QUERY_DURATION.with_label_values(&[graph_name]).observe(elapsed);
+                QUERIES_TOTAL.with_label_values(&["error"]).inc();
+                return Ok(Response::new(QueryResponse {
+                    columns: vec![],
+                    rows: vec![],
+                    stats: None,
+                    error: Some(format!("execution error: {}", e)),
+                }));
+            }
+        };
+
+        let elapsed = start.elapsed();
+        QUERY_DURATION
+            .with_label_values(&[graph_name])
+            .observe(elapsed.as_secs_f64());
+        QUERIES_TOTAL.with_label_values(&["success"]).inc();
+
+        let elapsed_ms = std::cmp::max(1, elapsed.as_millis() as i64);
+        let rows_returned = result_set.records.len() as i64;
+
+        tracing::info!(rows = rows_returned, elapsed_ms = elapsed_ms, "query completed");
+
+        let columns = result_set.columns.clone();
+        let rows: Vec<Row> = result_set
+            .records
+            .iter()
+            .map(|record| Row {
+                values: record.values.iter().map(value_to_proto).collect(),
+            })
+            .collect();
+
+        let stats = QueryStats {
+            nodes_created: 0,
+            nodes_deleted: 0,
+            edges_created: 0,
+            edges_deleted: 0,
+            properties_set: 0,
+            rows_returned,
+            execution_time_ms: elapsed_ms,
+        };
+
+        Ok(Response::new(QueryResponse {
+            columns,
+            rows,
+            stats: Some(stats),
+            error: None,
+        }))
+    }
+
+    /// Execute a write query through Raft consensus.
+    async fn execute_write_via_raft(
+        &self,
+        raft: &SynapticaRaft,
+        query: &str,
+        graph_name: &str,
+        start: std::time::Instant,
+    ) -> Result<Response<QueryResponse>, Status> {
+        let raft_req = RaftRequest::WriteQuery {
+            query: query.to_string(),
+            graph_name: graph_name.to_string(),
+        };
+
+        // Submit write to Raft — this replicates the entry to all nodes
+        match raft.client_write(raft_req.clone()).await {
+            Ok(_raft_resp) => {
+                // Entry is committed. Apply to local state machine.
+                if let Some(ref applier) = self.applier {
+                    let result = applier.apply(&raft_req);
+
+                    let elapsed = start.elapsed();
+                    QUERY_DURATION
+                        .with_label_values(&[graph_name])
+                        .observe(elapsed.as_secs_f64());
+
+                    if result.success {
+                        QUERIES_TOTAL.with_label_values(&["success"]).inc();
+                        Ok(Response::new(QueryResponse {
+                            columns: vec!["result".to_string()],
+                            rows: vec![],
+                            stats: Some(QueryStats {
+                                nodes_created: 0,
+                                nodes_deleted: 0,
+                                edges_created: 0,
+                                edges_deleted: 0,
+                                properties_set: 0,
+                                rows_returned: result.rows_affected,
+                                execution_time_ms: std::cmp::max(
+                                    1,
+                                    elapsed.as_millis() as i64,
+                                ),
+                            }),
+                            error: None,
+                        }))
+                    } else {
+                        QUERIES_TOTAL.with_label_values(&["error"]).inc();
+                        Ok(Response::new(QueryResponse {
+                            columns: vec![],
+                            rows: vec![],
+                            stats: None,
+                            error: result.error,
+                        }))
+                    }
+                } else {
+                    Err(Status::internal("no state machine applier configured"))
+                }
+            }
+            Err(e) => {
+                let elapsed = start.elapsed().as_secs_f64();
+                QUERY_DURATION.with_label_values(&[graph_name]).observe(elapsed);
+                QUERIES_TOTAL.with_label_values(&["error"]).inc();
+
+                // If not leader, the error may contain leader info for redirect
+                let err_msg = format!("raft error: {}", e);
+                tracing::warn!(error = %err_msg, "write via raft failed");
+                Ok(Response::new(QueryResponse {
+                    columns: vec![],
+                    rows: vec![],
+                    stats: None,
+                    error: Some(err_msg),
+                }))
+            }
+        }
+    }
+}
+
+/// Determine if a parsed GQL program contains write operations.
+fn is_write_query(program: &synaptica_gql::ast::GqlProgram) -> bool {
+    use synaptica_gql::ast::GqlStatement;
+    program.statements.iter().any(|stmt| matches!(
+        stmt,
+        GqlStatement::Insert(_)
+            | GqlStatement::Set(_)
+            | GqlStatement::Delete(_)
+            | GqlStatement::Remove(_)
+            | GqlStatement::CreateGraph(_)
+            | GqlStatement::DropGraph(_)
+            | GqlStatement::CreateGraphType(_)
+            | GqlStatement::CreateIndex(_)
+            | GqlStatement::DropIndex(_)
+    ))
 }
 
 fn value_to_proto(value: &Value) -> GqlValue {

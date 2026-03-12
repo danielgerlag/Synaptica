@@ -84,6 +84,8 @@ synaptica-gql = { path = "crates/synaptica-gql" }
 synaptica-storage = { path = "crates/synaptica-storage" }
 synaptica-exec = { path = "crates/synaptica-exec" }
 synaptica-cluster = { path = "crates/synaptica-cluster" }
+openraft = { workspace = true }
+tokio = { workspace = true }
 tempfile = "3"
 chrono = { workspace = true }
 serde = { workspace = true }

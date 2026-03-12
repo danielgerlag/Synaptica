@@ -31,9 +31,15 @@ fn default_metrics_addr() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterConfig {
-    pub node_id: String,
-    pub peers: Vec<String>,
-    pub listen_addr: String,
+    pub node_id: u64,
+    pub peers: Vec<PeerConfig>,
+    pub cluster_addr: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerConfig {
+    pub node_id: u64,
+    pub address: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

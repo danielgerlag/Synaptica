@@ -1,89 +1,65 @@
-use std::time::Duration;
+use std::io::Cursor;
 
-/// Configuration for a Raft node.
-#[derive(Debug, Clone)]
-pub struct RaftConfig {
-    pub node_id: String,
-    pub peers: Vec<String>,
-    pub election_timeout: Duration,
-    pub heartbeat_interval: Duration,
+use serde::{Deserialize, Serialize};
+
+pub type NodeId = u64;
+
+openraft::declare_raft_types!(
+    pub TypeConfig:
+        D = RaftRequest,
+        R = RaftResponse,
+);
+
+pub type SynapticaRaft = openraft::Raft<TypeConfig>;
+
+/// A write request replicated through Raft consensus.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum RaftRequest {
+    /// Execute a GQL write query (INSERT, SET, DELETE, CREATE/DROP INDEX, etc.)
+    WriteQuery {
+        query: String,
+        graph_name: String,
+    },
 }
 
-/// Placeholder Raft node  will integrate with openraft in a future pass.
-#[derive(Debug)]
-pub struct RaftNode {
-    config: RaftConfig,
-    term: u64,
-}
-
-impl RaftNode {
-    pub fn new(config: RaftConfig) -> Self {
-        Self { config, term: 0 }
-    }
-
-    /// Returns whether this node believes it is the leader.
-    pub fn is_leader(&self) -> bool {
-        false
-    }
-
-    /// Returns the id of the current leader, if known.
-    pub fn leader_id(&self) -> Option<String> {
-        None
-    }
-
-    /// Returns the current Raft term.
-    pub fn current_term(&self) -> u64 {
-        self.term
-    }
-
-    /// Returns a reference to the node configuration.
-    pub fn config(&self) -> &RaftConfig {
-        &self.config
-    }
+/// Response returned after a Raft entry is applied to the state machine.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RaftResponse {
+    pub success: bool,
+    pub error: Option<String>,
+    pub rows_affected: i64,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_config() -> RaftConfig {
-        RaftConfig {
-            node_id: "node-1".to_string(),
-            peers: vec!["node-2".to_string(), "node-3".to_string()],
-            election_timeout: Duration::from_millis(300),
-            heartbeat_interval: Duration::from_millis(100),
+    #[test]
+    fn test_request_serialization() {
+        let req = RaftRequest::WriteQuery {
+            query: "INSERT (:Person {name: 'Alice'})".to_string(),
+            graph_name: "default".to_string(),
+        };
+        let bytes = bincode::serialize(&req).unwrap();
+        let deserialized: RaftRequest = bincode::deserialize(&bytes).unwrap();
+        match deserialized {
+            RaftRequest::WriteQuery { query, graph_name } => {
+                assert_eq!(query, "INSERT (:Person {name: 'Alice'})");
+                assert_eq!(graph_name, "default");
+            }
         }
     }
 
     #[test]
-    fn test_raft_node_creation() {
-        let node = RaftNode::new(make_config());
-        assert_eq!(node.config().node_id, "node-1");
-    }
-
-    #[test]
-    fn test_initial_term_is_zero() {
-        let node = RaftNode::new(make_config());
-        assert_eq!(node.current_term(), 0);
-    }
-
-    #[test]
-    fn test_is_leader_initially_false() {
-        let node = RaftNode::new(make_config());
-        assert!(!node.is_leader());
-    }
-
-    #[test]
-    fn test_leader_id_initially_none() {
-        let node = RaftNode::new(make_config());
-        assert!(node.leader_id().is_none());
-    }
-
-    #[test]
-    fn test_config_preserved() {
-        let node = RaftNode::new(make_config());
-        let cfg = node.config();
-        assert_eq!(cfg.node_id, "node-1");
-        assert_eq!(cfg.peers, vec!["node-2".to_string(), "node-3".to_string()]);
+    fn test_response_serialization() {
+        let resp = RaftResponse {
+            success: true,
+            error: None,
+            rows_affected: 5,
+        };
+        let bytes = bincode::serialize(&resp).unwrap();
+        let deserialized: RaftResponse = bincode::deserialize(&bytes).unwrap();
+        assert!(deserialized.success);
+        assert_eq!(deserialized.rows_affected, 5);
     }
 }

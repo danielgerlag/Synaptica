@@ -1,7 +1,10 @@
 pub mod distributed_tx;
+pub mod log_store;
 pub mod membership;
+pub mod network;
 pub mod partition;
 pub mod raft;
 pub mod rebalance;
 pub mod routing;
 pub mod snapshot;
+pub mod state_machine;

@@ -32,6 +32,12 @@ impl ColumnFamilies {
     /// Schema CF — stores graph type schemas.
     pub const SCHEMA: &'static str = "schema";
 
+    /// Raft log CF — stores Raft log entries keyed by log index.
+    pub const RAFT_LOG: &'static str = "raft_log";
+
+    /// Raft metadata CF — stores vote, last_applied, membership, snapshot meta.
+    pub const RAFT_META: &'static str = "raft_meta";
+
     /// Returns all column family names.
     pub fn all() -> &'static [&'static str] {
         &[
@@ -45,6 +51,8 @@ impl ColumnFamilies {
             Self::PROP_INDEX,
             Self::GRAPH_META,
             Self::SCHEMA,
+            Self::RAFT_LOG,
+            Self::RAFT_META,
         ]
     }
 }

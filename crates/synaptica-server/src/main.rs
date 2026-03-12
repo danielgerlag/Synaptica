@@ -10,6 +10,8 @@ use tracing_subscriber::EnvFilter;
 use synaptica_server::auth::AuthInterceptor;
 use synaptica_server::client_service::proto::synaptica_service_server::SynapticaServiceServer;
 use synaptica_server::client_service::SynapticaServiceImpl;
+use synaptica_server::cluster_service::proto::cluster_service_server::ClusterServiceServer;
+use synaptica_server::cluster_service::ClusterServiceImpl;
 use synaptica_server::config::ServerConfig;
 use synaptica_server::metrics;
 use synaptica_server::node::NodeRuntime;
@@ -36,6 +38,18 @@ struct Cli {
     /// Listen address for UI static file server
     #[arg(long, default_value = "0.0.0.0:8080")]
     ui_addr: String,
+
+    /// Node ID for cluster mode (overrides config)
+    #[arg(long)]
+    node_id: Option<u64>,
+
+    /// Cluster listen address for inter-node gRPC (overrides config)
+    #[arg(long)]
+    cluster_addr: Option<String>,
+
+    /// Peer nodes in format "id=address" (e.g. "2=127.0.0.1:9191")
+    #[arg(long)]
+    peer: Vec<String>,
 }
 
 #[tokio::main]
@@ -73,9 +87,56 @@ async fn main() -> anyhow::Result<()> {
 
     let node = NodeRuntime::start(&config)?;
 
+    // Cluster mode: initialize Raft if config or CLI flags provide cluster settings
+    let mut node = node;
+    let cluster_mode = config.cluster.is_some()
+        || cli.node_id.is_some()
+        || cli.cluster_addr.is_some()
+        || !cli.peer.is_empty();
+
+    if cluster_mode {
+        let node_id = cli.node_id.unwrap_or_else(|| {
+            config
+                .cluster
+                .as_ref()
+                .map(|c| c.node_id)
+                .unwrap_or(1)
+        });
+        let cluster_addr = cli.cluster_addr.clone().unwrap_or_else(|| {
+            config
+                .cluster
+                .as_ref()
+                .map(|c| c.cluster_addr.clone())
+                .unwrap_or_else(|| "0.0.0.0:9191".to_string())
+        });
+
+        // Build peer list from CLI --peer flags and config
+        let mut peers: Vec<(u64, String)> = Vec::new();
+        for peer_str in &cli.peer {
+            if let Some((id_str, addr)) = peer_str.split_once('=') {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    peers.push((id, addr.to_string()));
+                }
+            }
+        }
+        if let Some(ref cluster_config) = config.cluster {
+            for peer in &cluster_config.peers {
+                if !peers.iter().any(|(id, _)| *id == peer.node_id) {
+                    peers.push((peer.node_id, peer.address.clone()));
+                }
+            }
+        }
+
+        node.init_cluster(node_id, cluster_addr, peers).await?;
+        tracing::info!(node_id = node_id, "cluster mode active");
+    }
+
     let svc = SynapticaServiceImpl {
         storage: node.storage.clone(),
         default_graph_id: node.default_graph_id,
+        raft: node.raft.clone(),
+        applier: node.applier.clone(),
+        node_id: node.node_id,
     };
 
     let addr = config.listen_addr.parse()?;
@@ -120,6 +181,30 @@ async fn main() -> anyhow::Result<()> {
             }
         });
         tracing::info!(addr = %cli.ui_addr, dir = %cli.ui_dir.as_deref().unwrap_or(""), "UI server started");
+    }
+
+    // Start cluster gRPC service on separate port if in cluster mode
+    if cluster_mode {
+        if let (Some(ref raft), Some(ref applier), Some(ref cluster_addr)) =
+            (&node.raft, &node.applier, &node.cluster_addr)
+        {
+            let cluster_svc = ClusterServiceImpl {
+                raft: raft.clone(),
+                applier: applier.clone(),
+            };
+            let cluster_addr_parsed: std::net::SocketAddr = cluster_addr.parse()?;
+            tracing::info!(addr = %cluster_addr_parsed, "starting cluster gRPC service");
+
+            tokio::spawn(async move {
+                if let Err(e) = Server::builder()
+                    .add_service(ClusterServiceServer::new(cluster_svc))
+                    .serve(cluster_addr_parsed)
+                    .await
+                {
+                    tracing::error!(error = %e, "cluster gRPC server failed");
+                }
+            });
+        }
     }
 
     builder

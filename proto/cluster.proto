@@ -3,128 +3,59 @@ syntax = "proto3";
 package synaptica.cluster.v1;
 
 service ClusterService {
-  // Raft AppendEntries RPC.
-  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+  // Raft vote RPC — serialized openraft VoteRequest/VoteResponse.
+  rpc Vote(RaftMessage) returns (RaftMessage);
 
-  // Raft RequestVote RPC.
-  rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse);
+  // Raft append entries RPC — serialized openraft AppendEntriesRequest/Response.
+  rpc AppendEntries(RaftMessage) returns (RaftMessage);
 
-  // Raft InstallSnapshot RPC.
-  rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
+  // Raft install snapshot RPC — serialized openraft InstallSnapshotRequest/Response.
+  rpc InstallSnapshot(RaftMessage) returns (RaftMessage);
 
-  // Forward a query to the partition leader.
-  rpc ForwardQuery(ForwardQueryRequest) returns (ForwardQueryResponse);
+  // Forward a write query to the Raft leader for consensus.
+  rpc ForwardWrite(ForwardWriteRequest) returns (ForwardWriteResponse);
 
-  // Transfer a partition to another node.
-  rpc TransferPartition(TransferPartitionRequest) returns (TransferPartitionResponse);
+  // Add a learner node to the Raft cluster.
+  rpc AddLearner(AddLearnerRequest) returns (AddLearnerResponse);
 
-  // Join the cluster.
-  rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse);
-
-  // Leave the cluster.
-  rpc LeaveCluster(LeaveClusterRequest) returns (LeaveClusterResponse);
-
-  // Heartbeat / health check between nodes.
-  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  // Change cluster membership (promote learners to voters).
+  rpc ChangeMembership(ChangeMembershipRequest) returns (ChangeMembershipResponse);
 }
 
-message AppendEntriesRequest {
-  uint64 term = 1;
-  string leader_id = 2;
-  uint64 prev_log_index = 3;
-  uint64 prev_log_term = 4;
-  repeated LogEntry entries = 5;
-  uint64 leader_commit = 6;
+// Generic container for serialized openraft messages (bincode-encoded).
+message RaftMessage {
+  bytes data = 1;
 }
 
-message AppendEntriesResponse {
-  uint64 term = 1;
-  bool success = 2;
-}
-
-message RequestVoteRequest {
-  uint64 term = 1;
-  string candidate_id = 2;
-  uint64 last_log_index = 3;
-  uint64 last_log_term = 4;
-}
-
-message RequestVoteResponse {
-  uint64 term = 1;
-  bool vote_granted = 2;
-}
-
-message InstallSnapshotRequest {
-  uint64 term = 1;
-  string leader_id = 2;
-  uint64 last_included_index = 3;
-  uint64 last_included_term = 4;
-  uint64 offset = 5;
-  bytes data = 6;
-  bool done = 7;
-}
-
-message InstallSnapshotResponse {
-  uint64 term = 1;
-}
-
-message LogEntry {
-  uint64 index = 1;
-  uint64 term = 2;
-  bytes data = 3;
-}
-
-message ForwardQueryRequest {
+// Forward a write query to the leader for Raft consensus.
+message ForwardWriteRequest {
   string query = 1;
   string graph_name = 2;
-  bytes partition_key = 3;
 }
 
-message ForwardQueryResponse {
-  repeated string columns = 1;
-  repeated ForwardRow rows = 2;
-  optional string error = 3;
-}
-
-message ForwardRow {
-  repeated bytes values = 1;
-}
-
-message TransferPartitionRequest {
-  string partition_id = 1;
-  string target_node_id = 2;
-}
-
-message TransferPartitionResponse {
+message ForwardWriteResponse {
   bool success = 1;
+  optional string error = 2;
+  int64 rows_affected = 3;
 }
 
-message JoinClusterRequest {
-  string node_id = 1;
+// Add a learner (non-voting replica) to the cluster.
+message AddLearnerRequest {
+  uint64 node_id = 1;
   string address = 2;
 }
 
-message JoinClusterResponse {
+message AddLearnerResponse {
   bool success = 1;
-  string leader_id = 2;
-  repeated string member_ids = 3;
+  optional string error = 2;
 }
 
-message LeaveClusterRequest {
-  string node_id = 1;
+// Change cluster membership — set of voter node IDs.
+message ChangeMembershipRequest {
+  repeated uint64 voter_ids = 1;
 }
 
-message LeaveClusterResponse {
+message ChangeMembershipResponse {
   bool success = 1;
-}
-
-message HeartbeatRequest {
-  string node_id = 1;
-  uint64 term = 2;
-}
-
-message HeartbeatResponse {
-  string node_id = 1;
-  uint64 term = 2;
-  bool is_leader = 3;
+  optional string error = 2;
 }
