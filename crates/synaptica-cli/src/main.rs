@@ -5,7 +5,7 @@ pub mod proto {
 use anyhow::Result;
 use clap::Parser;
 use proto::synaptica_service_client::SynapticaServiceClient;
-use proto::{GqlValue, HealthRequest, QueryRequest};
+use proto::{GqlValue, HealthRequest, ListGraphsRequest, QueryRequest};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::path::PathBuf;
@@ -20,6 +20,10 @@ struct Cli {
     /// Output format
     #[arg(long, default_value = "table")]
     format: OutputFormat,
+
+    /// Graph name to operate on
+    #[arg(long, default_value = "default")]
+    graph: String,
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -163,10 +167,12 @@ fn print_help() {
     println!("Synaptica CLI commands:");
     println!("  :help          Show this help message");
     println!("  :status        Show server health status");
+    println!("  :graphs        List all available graphs");
     println!("  :quit, :exit   Exit the CLI");
     println!();
     println!("Enter any GQL query to execute it.");
     println!("Use \\ at end of line for multi-line input.");
+    println!("Use --graph <NAME> flag to select a graph (default: 'default').");
 }
 
 #[tokio::main]
@@ -175,14 +181,16 @@ async fn main() -> Result<()> {
 
     println!("Connecting to {}...", cli.host);
     let mut client = SynapticaServiceClient::connect(cli.host.clone()).await?;
-    println!("Connected.");
+    println!("Connected. Using graph: {}", cli.graph);
+
+    let prompt = format!("synaptica({})> ", cli.graph);
 
     let mut rl = DefaultEditor::new()?;
     let hist = history_path();
     let _ = rl.load_history(&hist);
 
     loop {
-        let readline = rl.readline("synaptica> ");
+        let readline = rl.readline(&prompt);
         match readline {
             Ok(line) => {
                 let mut input = line.clone();
@@ -228,10 +236,30 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
+                    ":graphs" => {
+                        match client.list_graphs(ListGraphsRequest {}).await {
+                            Ok(resp) => {
+                                let graphs = resp.into_inner().graphs;
+                                if graphs.is_empty() {
+                                    println!("No graphs found.");
+                                } else {
+                                    println!("{:<20} {}", "NAME", "ID");
+                                    println!("{}", "-".repeat(60));
+                                    for g in &graphs {
+                                        let marker = if g.name == cli.graph { " *" } else { "" };
+                                        println!("{:<20} {}{}", g.name, g.id, marker);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Error: {}", e.message());
+                            }
+                        }
+                    }
                     query => {
                         let request = QueryRequest {
                             query: query.to_string(),
-                            graph_name: String::new(),
+                            graph_name: cli.graph.clone(),
                             parameters: Default::default(),
                             transaction_id: None,
                         };

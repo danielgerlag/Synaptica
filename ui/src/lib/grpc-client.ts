@@ -73,6 +73,11 @@ export interface MetricsData {
   counters: Record<string, number>
 }
 
+export interface GraphInfo {
+  name: string
+  id: string
+}
+
 export interface GqlNode {
   id: string
   labels: string[]
@@ -255,6 +260,11 @@ class SynapticaClient {
     for (const [k, v] of Object.entries(response.gauges)) gauges[k] = v
     for (const [k, v] of Object.entries(response.counters)) counters[k] = Number(v)
     return { gauges, counters }
+  }
+
+  async listGraphs(): Promise<GraphInfo[]> {
+    const { response } = await this.rpc.listGraphs({})
+    return response.graphs.map((g) => ({ name: g.name, id: g.id }))
   }
 
   /** Run INSERT queries to populate the database with sample data. */

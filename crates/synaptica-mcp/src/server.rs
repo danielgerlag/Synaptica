@@ -39,6 +39,12 @@ pub struct IndexParams {
     pub graph: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CreateGraphParams {
+    /// Name of the graph to create
+    pub name: String,
+}
+
 #[tool_router]
 impl SynapticaMcpServer {
     pub fn new(backend: Arc<dyn SynapticaBackend>) -> Self {
@@ -238,6 +244,44 @@ impl SynapticaMcpServer {
             Err(e) => format!("Error: {}", e),
         }
     }
+
+    /// List all graphs available in the database.
+    #[tool(name = "list_graphs")]
+    async fn list_graphs(&self) -> String {
+        match self.backend.list_graphs().await {
+            Ok(graphs) => {
+                if graphs.is_empty() {
+                    return "No graphs found.".to_string();
+                }
+                let mut out = String::from("Available graphs:\n");
+                for g in &graphs {
+                    out.push_str(&format!("  {} (id: {})\n", g.name, g.id));
+                }
+                out
+            }
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    /// Create a new named graph in the database.
+    /// Use this to create isolated graph spaces for different datasets.
+    #[tool(name = "create_graph")]
+    async fn create_graph(
+        &self,
+        Parameters(params): Parameters<CreateGraphParams>,
+    ) -> String {
+        let query = format!("CREATE GRAPH {}", params.name);
+        match self.backend.execute_query(&query, "").await {
+            Ok(result) => {
+                if let Some(err) = &result.error {
+                    format!("Error: {}", err)
+                } else {
+                    format!("Graph '{}' created successfully.", params.name)
+                }
+            }
+            Err(e) => format!("Error: {}", e),
+        }
+    }
 }
 
 #[tool_handler]
@@ -250,7 +294,9 @@ impl ServerHandler for SynapticaMcpServer {
              Use the 'query' tool to execute GQL queries. Use 'get_schema' to discover the graph structure first. \
              Supported operations: MATCH (read), INSERT (create), SET (update), DELETE (remove), \
              CREATE/DROP INDEX (indexing). Edge creation requires MATCH first: \
-             MATCH (a:Label1), (b:Label2) INSERT (a)-[:REL]->(b)."
+             MATCH (a:Label1), (b:Label2) INSERT (a)-[:REL]->(b). \
+             Multi-graph: Use 'list_graphs' to see available graphs, 'create_graph' to create new ones, \
+             and pass the 'graph' parameter to any tool to target a specific graph."
                 .to_string(),
         );
         info.capabilities = ServerCapabilities::builder()

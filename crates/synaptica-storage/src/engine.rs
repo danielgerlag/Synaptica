@@ -129,6 +129,56 @@ impl StorageEngine {
         encoding::deserialize_value(&value).map_err(StorageError::Deserialization)
     }
 
+    /// List all graphs by scanning the GRAPH_META column family.
+    pub fn list_graphs(&self) -> StorageResult<Vec<GraphMeta>> {
+        let cf = self.cf(ColumnFamilies::GRAPH_META)?;
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+        let mut graphs = Vec::new();
+        for item in iter {
+            let (_key, value) = item?;
+            if let Ok(meta) = encoding::deserialize_value::<GraphMeta>(&value) {
+                graphs.push(meta);
+            }
+        }
+        Ok(graphs)
+    }
+
+    /// Delete a graph and all its data across all column families.
+    pub fn delete_graph(&self, graph_id: &GraphId) -> StorageResult<()> {
+        // Delete all data with graph_id prefix from data column families
+        let data_cfs = [
+            ColumnFamilies::NODES,
+            ColumnFamilies::EDGES,
+            ColumnFamilies::ADJ_OUT,
+            ColumnFamilies::ADJ_IN,
+            ColumnFamilies::NODE_LABELS,
+            ColumnFamilies::EDGE_LABELS,
+            ColumnFamilies::PROP_INDEX,
+        ];
+        let prefix = graph_id.as_bytes().to_vec();
+        for cf_name in &data_cfs {
+            let cf = self.cf(cf_name)?;
+            let mut batch = WriteBatch::default();
+            let iter = self.db.prefix_iterator_cf(&cf, &prefix);
+            for item in iter {
+                let (key, _) = item?;
+                if key.starts_with(&prefix) {
+                    batch.delete_cf(&cf, &key);
+                } else {
+                    break;
+                }
+            }
+            if batch.len() > 0 {
+                self.db.write(batch)?;
+            }
+        }
+        // Delete graph metadata entry
+        let meta_cf = self.cf(ColumnFamilies::GRAPH_META)?;
+        let meta_key = encoding::encode_graph_meta_key(graph_id);
+        self.db.delete_cf(&meta_cf, &meta_key)?;
+        Ok(())
+    }
+
     // --- Node Operations ---
 
     /// Insert or update a node.

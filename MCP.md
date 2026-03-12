@@ -142,6 +142,17 @@ Drops a secondary property index.
 - `property` (string, required)
 - `graph` (string, optional)
 
+### `list_graphs`
+Lists all graphs in the database.
+
+**Parameters:** none
+
+### `create_graph`
+Creates a new named graph.
+
+**Parameters:**
+- `name` (string, required) — Name for the new graph
+
 ### `health`
 Returns database health status and version.
 
@@ -191,6 +202,11 @@ MATCH (n:Person {name: 'Alice'}) DETACH DELETE n
 -- Indexes
 CREATE INDEX ON :Person(name)
 DROP INDEX ON :Person(name)
+
+-- Multi-graph management
+CREATE GRAPH myGraph
+LIST GRAPHS
+DROP GRAPH myGraph
 ```
 
 ---

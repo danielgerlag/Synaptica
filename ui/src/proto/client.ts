@@ -560,6 +560,33 @@ export interface GetMetricsResponse {
         [key: string]: bigint;
     };
 }
+/**
+ * @generated from protobuf message synaptica.client.v1.ListGraphsRequest
+ */
+export interface ListGraphsRequest {
+}
+/**
+ * @generated from protobuf message synaptica.client.v1.ListGraphsResponse
+ */
+export interface ListGraphsResponse {
+    /**
+     * @generated from protobuf field: repeated synaptica.client.v1.GraphInfo graphs = 1
+     */
+    graphs: GraphInfo[];
+}
+/**
+ * @generated from protobuf message synaptica.client.v1.GraphInfo
+ */
+export interface GraphInfo {
+    /**
+     * @generated from protobuf field: string name = 1
+     */
+    name: string;
+    /**
+     * @generated from protobuf field: string id = 2
+     */
+    id: string;
+}
 // @generated message type with reflection information, may provide speed optimized methods
 class QueryRequest$Type extends MessageType<QueryRequest> {
     constructor() {
@@ -2722,6 +2749,146 @@ class GetMetricsResponse$Type extends MessageType<GetMetricsResponse> {
  * @generated MessageType for protobuf message synaptica.client.v1.GetMetricsResponse
  */
 export const GetMetricsResponse = new GetMetricsResponse$Type();
+// @generated message type with reflection information, may provide speed optimized methods
+class ListGraphsRequest$Type extends MessageType<ListGraphsRequest> {
+    constructor() {
+        super("synaptica.client.v1.ListGraphsRequest", []);
+    }
+    create(value?: PartialMessage<ListGraphsRequest>): ListGraphsRequest {
+        const message = globalThis.Object.create((this.messagePrototype!));
+        if (value !== undefined)
+            reflectionMergePartial<ListGraphsRequest>(this, message, value);
+        return message;
+    }
+    internalBinaryRead(reader: IBinaryReader, length: number, options: BinaryReadOptions, target?: ListGraphsRequest): ListGraphsRequest {
+        let message = target ?? this.create(), end = reader.pos + length;
+        while (reader.pos < end) {
+            let [fieldNo, wireType] = reader.tag();
+            switch (fieldNo) {
+                default:
+                    let u = options.readUnknownField;
+                    if (u === "throw")
+                        throw new globalThis.Error(`Unknown field ${fieldNo} (wire type ${wireType}) for ${this.typeName}`);
+                    let d = reader.skip(wireType);
+                    if (u !== false)
+                        (u === true ? UnknownFieldHandler.onRead : u)(this.typeName, message, fieldNo, wireType, d);
+            }
+        }
+        return message;
+    }
+    internalBinaryWrite(message: ListGraphsRequest, writer: IBinaryWriter, options: BinaryWriteOptions): IBinaryWriter {
+        let u = options.writeUnknownFields;
+        if (u !== false)
+            (u == true ? UnknownFieldHandler.onWrite : u)(this.typeName, message, writer);
+        return writer;
+    }
+}
+/**
+ * @generated MessageType for protobuf message synaptica.client.v1.ListGraphsRequest
+ */
+export const ListGraphsRequest = new ListGraphsRequest$Type();
+// @generated message type with reflection information, may provide speed optimized methods
+class ListGraphsResponse$Type extends MessageType<ListGraphsResponse> {
+    constructor() {
+        super("synaptica.client.v1.ListGraphsResponse", [
+            { no: 1, name: "graphs", kind: "message", repeat: 2 /*RepeatType.UNPACKED*/, T: () => GraphInfo }
+        ]);
+    }
+    create(value?: PartialMessage<ListGraphsResponse>): ListGraphsResponse {
+        const message = globalThis.Object.create((this.messagePrototype!));
+        message.graphs = [];
+        if (value !== undefined)
+            reflectionMergePartial<ListGraphsResponse>(this, message, value);
+        return message;
+    }
+    internalBinaryRead(reader: IBinaryReader, length: number, options: BinaryReadOptions, target?: ListGraphsResponse): ListGraphsResponse {
+        let message = target ?? this.create(), end = reader.pos + length;
+        while (reader.pos < end) {
+            let [fieldNo, wireType] = reader.tag();
+            switch (fieldNo) {
+                case /* repeated synaptica.client.v1.GraphInfo graphs */ 1:
+                    message.graphs.push(GraphInfo.internalBinaryRead(reader, reader.uint32(), options));
+                    break;
+                default:
+                    let u = options.readUnknownField;
+                    if (u === "throw")
+                        throw new globalThis.Error(`Unknown field ${fieldNo} (wire type ${wireType}) for ${this.typeName}`);
+                    let d = reader.skip(wireType);
+                    if (u !== false)
+                        (u === true ? UnknownFieldHandler.onRead : u)(this.typeName, message, fieldNo, wireType, d);
+            }
+        }
+        return message;
+    }
+    internalBinaryWrite(message: ListGraphsResponse, writer: IBinaryWriter, options: BinaryWriteOptions): IBinaryWriter {
+        /* repeated synaptica.client.v1.GraphInfo graphs = 1; */
+        for (let i = 0; i < message.graphs.length; i++)
+            GraphInfo.internalBinaryWrite(message.graphs[i], writer.tag(1, WireType.LengthDelimited).fork(), options).join();
+        let u = options.writeUnknownFields;
+        if (u !== false)
+            (u == true ? UnknownFieldHandler.onWrite : u)(this.typeName, message, writer);
+        return writer;
+    }
+}
+/**
+ * @generated MessageType for protobuf message synaptica.client.v1.ListGraphsResponse
+ */
+export const ListGraphsResponse = new ListGraphsResponse$Type();
+// @generated message type with reflection information, may provide speed optimized methods
+class GraphInfo$Type extends MessageType<GraphInfo> {
+    constructor() {
+        super("synaptica.client.v1.GraphInfo", [
+            { no: 1, name: "name", kind: "scalar", T: 9 /*ScalarType.STRING*/ },
+            { no: 2, name: "id", kind: "scalar", T: 9 /*ScalarType.STRING*/ }
+        ]);
+    }
+    create(value?: PartialMessage<GraphInfo>): GraphInfo {
+        const message = globalThis.Object.create((this.messagePrototype!));
+        message.name = "";
+        message.id = "";
+        if (value !== undefined)
+            reflectionMergePartial<GraphInfo>(this, message, value);
+        return message;
+    }
+    internalBinaryRead(reader: IBinaryReader, length: number, options: BinaryReadOptions, target?: GraphInfo): GraphInfo {
+        let message = target ?? this.create(), end = reader.pos + length;
+        while (reader.pos < end) {
+            let [fieldNo, wireType] = reader.tag();
+            switch (fieldNo) {
+                case /* string name */ 1:
+                    message.name = reader.string();
+                    break;
+                case /* string id */ 2:
+                    message.id = reader.string();
+                    break;
+                default:
+                    let u = options.readUnknownField;
+                    if (u === "throw")
+                        throw new globalThis.Error(`Unknown field ${fieldNo} (wire type ${wireType}) for ${this.typeName}`);
+                    let d = reader.skip(wireType);
+                    if (u !== false)
+                        (u === true ? UnknownFieldHandler.onRead : u)(this.typeName, message, fieldNo, wireType, d);
+            }
+        }
+        return message;
+    }
+    internalBinaryWrite(message: GraphInfo, writer: IBinaryWriter, options: BinaryWriteOptions): IBinaryWriter {
+        /* string name = 1; */
+        if (message.name !== "")
+            writer.tag(1, WireType.LengthDelimited).string(message.name);
+        /* string id = 2; */
+        if (message.id !== "")
+            writer.tag(2, WireType.LengthDelimited).string(message.id);
+        let u = options.writeUnknownFields;
+        if (u !== false)
+            (u == true ? UnknownFieldHandler.onWrite : u)(this.typeName, message, writer);
+        return writer;
+    }
+}
+/**
+ * @generated MessageType for protobuf message synaptica.client.v1.GraphInfo
+ */
+export const GraphInfo = new GraphInfo$Type();
 /**
  * @generated ServiceType for protobuf service synaptica.client.v1.SynapticaService
  */
@@ -2738,5 +2905,6 @@ export const SynapticaService = new ServiceType("synaptica.client.v1.SynapticaSe
     { name: "ListIndexes", options: {}, I: ListIndexesRequest, O: ListIndexesResponse },
     { name: "CreateIndex", options: {}, I: CreateIndexRequest, O: CreateIndexResponse },
     { name: "DropIndex", options: {}, I: DropIndexRequest, O: DropIndexResponse },
-    { name: "GetMetrics", options: {}, I: GetMetricsRequest, O: GetMetricsResponse }
+    { name: "GetMetrics", options: {}, I: GetMetricsRequest, O: GetMetricsResponse },
+    { name: "ListGraphs", options: {}, I: ListGraphsRequest, O: ListGraphsResponse }
 ]);

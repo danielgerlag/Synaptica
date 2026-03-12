@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Moon, Sun, Wifi, WifiOff } from 'lucide-react'
 import { useAppStore } from '@/lib/store'
 import { client } from '@/lib/grpc-client'
+import { GraphSelector } from './GraphSelector'
 
 export function Header() {
   const { theme, toggleTheme, isConnected, setConnected } = useAppStore()
@@ -20,7 +21,7 @@ export function Header() {
 
   return (
     <header className="flex h-14 items-center justify-between border-b border-border bg-card px-6">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
         {isConnected ? (
           <Wifi className="h-4 w-4 text-green-500" />
         ) : (
@@ -29,6 +30,8 @@ export function Header() {
         <span className="text-sm text-muted-foreground">
           {isConnected ? 'Connected' : 'Disconnected'}
         </span>
+        <div className="mx-1 h-5 w-px bg-border" />
+        <GraphSelector />
       </div>
       <button
         onClick={toggleTheme}

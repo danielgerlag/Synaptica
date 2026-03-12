@@ -4,6 +4,8 @@
 import type { RpcTransport } from "@protobuf-ts/runtime-rpc";
 import type { ServiceInfo } from "@protobuf-ts/runtime-rpc";
 import { SynapticaService } from "./client";
+import type { ListGraphsResponse } from "./client";
+import type { ListGraphsRequest } from "./client";
 import type { GetMetricsResponse } from "./client";
 import type { GetMetricsRequest } from "./client";
 import type { DropIndexResponse } from "./client";
@@ -114,6 +116,12 @@ export interface ISynapticaServiceClient {
      * @generated from protobuf rpc: GetMetrics
      */
     getMetrics(input: GetMetricsRequest, options?: RpcOptions): UnaryCall<GetMetricsRequest, GetMetricsResponse>;
+    /**
+     * List all available graphs.
+     *
+     * @generated from protobuf rpc: ListGraphs
+     */
+    listGraphs(input: ListGraphsRequest, options?: RpcOptions): UnaryCall<ListGraphsRequest, ListGraphsResponse>;
 }
 /**
  * @generated from protobuf service synaptica.client.v1.SynapticaService
@@ -240,5 +248,14 @@ export class SynapticaServiceClient implements ISynapticaServiceClient, ServiceI
     getMetrics(input: GetMetricsRequest, options?: RpcOptions): UnaryCall<GetMetricsRequest, GetMetricsResponse> {
         const method = this.methods[12], opt = this._transport.mergeOptions(options);
         return stackIntercept<GetMetricsRequest, GetMetricsResponse>("unary", this._transport, method, opt, input);
+    }
+    /**
+     * List all available graphs.
+     *
+     * @generated from protobuf rpc: ListGraphs
+     */
+    listGraphs(input: ListGraphsRequest, options?: RpcOptions): UnaryCall<ListGraphsRequest, ListGraphsResponse> {
+        const method = this.methods[13], opt = this._transport.mergeOptions(options);
+        return stackIntercept<ListGraphsRequest, ListGraphsResponse>("unary", this._transport, method, opt, input);
     }
 }

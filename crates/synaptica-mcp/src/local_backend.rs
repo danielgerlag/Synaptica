@@ -270,4 +270,15 @@ impl SynapticaBackend for LocalBackend {
     async fn cluster_status(&self) -> anyhow::Result<Option<ClusterInfo>> {
         Ok(None) // local mode has no cluster
     }
+
+    async fn list_graphs(&self) -> anyhow::Result<Vec<GraphSummary>> {
+        let metas = self.storage.list_graphs()?;
+        Ok(metas
+            .into_iter()
+            .map(|m| GraphSummary {
+                name: m.name,
+                id: m.id.0.to_string(),
+            })
+            .collect())
+    }
 }

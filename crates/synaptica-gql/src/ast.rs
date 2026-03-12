@@ -50,6 +50,8 @@ pub enum GqlStatement {
     CreateIndex(CreateIndexStatement),
     /// `DROP INDEX` – drop a property index.
     DropIndex(DropIndexStatement),
+    /// `LIST GRAPHS` – enumerate all graphs.
+    ListGraphs,
 }
 
 /// A `MATCH` statement with an optional graph reference, graph pattern, and clauses.

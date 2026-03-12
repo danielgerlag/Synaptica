@@ -10,7 +10,7 @@ mod proto {
 use proto::synaptica_service_client::SynapticaServiceClient;
 use proto::{
     gql_value, CreateIndexRequest, DropIndexRequest, GetSchemaRequest, HealthRequest,
-    ListIndexesRequest, ListLabelsRequest, QueryRequest, ClusterStatusRequest,
+    ListGraphsRequest, ListIndexesRequest, ListLabelsRequest, QueryRequest, ClusterStatusRequest,
 };
 
 /// Remote backend — connects to a running Synaptica server via gRPC.
@@ -322,5 +322,22 @@ impl SynapticaBackend for RemoteBackend {
                 })
                 .collect(),
         }))
+    }
+
+    async fn list_graphs(&self) -> anyhow::Result<Vec<GraphSummary>> {
+        let mut client = self.client.clone();
+        let resp = client
+            .list_graphs(ListGraphsRequest {})
+            .await?
+            .into_inner();
+
+        Ok(resp
+            .graphs
+            .into_iter()
+            .map(|g| GraphSummary {
+                name: g.name,
+                id: g.id,
+            })
+            .collect())
     }
 }

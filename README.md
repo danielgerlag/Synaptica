@@ -5,6 +5,7 @@ A high-performance distributed graph database written in Rust, implementing the 
 ## Features
 
 - **GQL Query Language** — Full parser for the ISO/IEC 39075:2024 Graph Query Language standard
+- **Multi-Graph** — Create, list, switch, and drop independent graphs within a single server
 - **RocksDB Storage** — High-performance embedded storage with column-family-based graph encoding
 - **MVCC Transactions** — Snapshot isolation with optimistic concurrency control
 - **Distributed Architecture** — Raft consensus, range-based partitioning, two-phase commit
@@ -152,7 +153,7 @@ Synaptica implements the ISO/IEC 39075:2024 GQL standard. Currently supported:
 - `SET` — Update node/edge properties
 - `DELETE` / `DETACH DELETE` — Remove nodes and edges
 - `REMOVE` — Remove properties and labels
-- `CREATE GRAPH` / `DROP GRAPH` — Graph management
+- `CREATE GRAPH` / `DROP GRAPH` / `LIST GRAPHS` — Multi-graph management
 - `CREATE GRAPH TYPE` — Schema definitions
 
 ### Clauses
@@ -210,6 +211,51 @@ All keys use big-endian encoding for correct lexicographic ordering, enabling ef
 - **Optimistic Concurrency** — Write-write conflicts detected at commit time
 - **Read-Your-Own-Writes** — Transactions see their own uncommitted changes
 - **Distributed 2PC** — Two-phase commit for cross-partition transactions
+
+## Multi-Graph Support
+
+Synaptica supports multiple independent graphs within a single server instance. Each graph has fully isolated nodes, edges, indexes, and properties.
+
+### GQL Statements
+
+```sql
+-- Create a new graph
+CREATE GRAPH myGraph
+
+-- Create only if it doesn't exist
+CREATE GRAPH IF NOT EXISTS myGraph
+
+-- List all graphs
+LIST GRAPHS
+
+-- Drop a graph (removes all data)
+DROP GRAPH myGraph
+
+-- Drop only if it exists
+DROP GRAPH IF EXISTS myGraph
+```
+
+### CLI Usage
+
+```bash
+# Connect to a specific graph
+synaptica-cli --addr http://127.0.0.1:50051 --graph myGraph
+
+# List graphs from the REPL
+:graphs
+```
+
+### Web UI
+
+The web UI includes a graph selector dropdown in the header. You can switch between graphs and create new ones inline.
+
+### MCP / AI Agent Integration
+
+MCP tools accept an optional `graph` parameter:
+
+- **`list_graphs`** — List all available graphs
+- **`create_graph`** — Create a new graph by name
+- **`query`** — Run a GQL query against a specific graph (use the `graph` parameter)
 
 ## Cluster Mode
 

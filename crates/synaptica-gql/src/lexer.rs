@@ -52,7 +52,7 @@ pub enum Token {
     Walk, Trail, Simple, Acyclic, Shortest, Path, Any,
     Commit, Rollback, Begin, If, Detach, Nodetach,
     Cost, Of, To, From,
-    Index, Unique, On,
+    Index, Unique, On, List,
 
     // Literals
     IntegerLit(i64),
@@ -163,6 +163,7 @@ fn keyword_token(word: &str) -> Option<Token> {
         "INDEX" => Some(Token::Index),
         "UNIQUE" => Some(Token::Unique),
         "ON" => Some(Token::On),
+        "LIST" => Some(Token::List),
         _ => None,
     }
 }

@@ -69,6 +69,13 @@ pub struct ClusterNodeInfo {
     pub role: String,
 }
 
+/// GraphSummary for MCP list_graphs responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphSummary {
+    pub name: String,
+    pub id: String,
+}
+
 /// Abstraction over local embedded and remote gRPC backends.
 #[async_trait]
 pub trait SynapticaBackend: Send + Sync {
@@ -80,4 +87,5 @@ pub trait SynapticaBackend: Send + Sync {
     async fn drop_index(&self, label: &str, property: &str, graph: &str) -> anyhow::Result<String>;
     async fn health(&self) -> anyhow::Result<HealthInfo>;
     async fn cluster_status(&self) -> anyhow::Result<Option<ClusterInfo>>;
+    async fn list_graphs(&self) -> anyhow::Result<Vec<GraphSummary>>;
 }

@@ -1,7 +1,7 @@
 use crate::expression::evaluate;
 use crate::operators::ExecutionContext;
 use crate::result::{Record, ResultSet};
-use synaptica_core::graph::{Edge, EdgeId, GraphId, Label, Node, NodeId};
+use synaptica_core::graph::{Edge, EdgeId, GraphId, GraphMeta, Label, Node, NodeId};
 use synaptica_core::types::Value;
 use synaptica_gql::ast::{Direction, Expression, SortDirection, BinaryOp, Literal};
 use synaptica_gql::planner::LogicalPlan;
@@ -150,6 +150,15 @@ impl<'a> ExecutionEngine<'a> {
             }
             LogicalPlan::DropIndex { name } => {
                 self.exec_drop_index(name, ctx)
+            }
+            LogicalPlan::CreateGraph { name, if_not_exists } => {
+                self.exec_create_graph(name, *if_not_exists, ctx)
+            }
+            LogicalPlan::DropGraph { name, if_exists } => {
+                self.exec_drop_graph(name, *if_exists, ctx)
+            }
+            LogicalPlan::ListGraphs => {
+                self.exec_list_graphs(ctx)
             }
             _ => Err(ExecError::NotImplemented(format!(
                 "{:?}",
@@ -1227,6 +1236,73 @@ impl<'a> ExecutionEngine<'a> {
 
         let mut rs = ResultSet::new(vec!["result".to_string()]);
         rs.add_record(vec![Value::String(format!("Index '{}' dropped", name))]);
+        Ok(rs)
+    }
+
+    fn exec_create_graph(
+        &self,
+        name: &str,
+        if_not_exists: bool,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<ResultSet, ExecError> {
+        let graph_id = GraphId::from_name(name);
+        // Check if graph already exists
+        if let Ok(_existing) = ctx.storage.get_graph_meta(&graph_id) {
+            if if_not_exists {
+                let mut rs = ResultSet::new(vec!["result".to_string()]);
+                rs.add_record(vec![Value::String(format!("Graph '{}' already exists", name))]);
+                return Ok(rs);
+            }
+            return Err(ExecError::StorageError(format!("Graph '{}' already exists", name)));
+        }
+        let meta = GraphMeta {
+            id: graph_id,
+            name: name.to_string(),
+            graph_type: None,
+        };
+        ctx.storage.put_graph_meta(&meta)
+            .map_err(|e| ExecError::StorageError(e.to_string()))?;
+        let mut rs = ResultSet::new(vec!["result".to_string()]);
+        rs.add_record(vec![Value::String(format!("Graph '{}' created", name))]);
+        Ok(rs)
+    }
+
+    fn exec_drop_graph(
+        &self,
+        name: &str,
+        if_exists: bool,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<ResultSet, ExecError> {
+        let graph_id = GraphId::from_name(name);
+        // Check if graph exists
+        if ctx.storage.get_graph_meta(&graph_id).is_err() {
+            if if_exists {
+                let mut rs = ResultSet::new(vec!["result".to_string()]);
+                rs.add_record(vec![Value::String(format!("Graph '{}' does not exist", name))]);
+                return Ok(rs);
+            }
+            return Err(ExecError::StorageError(format!("Graph '{}' not found", name)));
+        }
+        ctx.storage.delete_graph(&graph_id)
+            .map_err(|e| ExecError::StorageError(e.to_string()))?;
+        let mut rs = ResultSet::new(vec!["result".to_string()]);
+        rs.add_record(vec![Value::String(format!("Graph '{}' dropped", name))]);
+        Ok(rs)
+    }
+
+    fn exec_list_graphs(
+        &self,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<ResultSet, ExecError> {
+        let graphs = ctx.storage.list_graphs()
+            .map_err(|e| ExecError::StorageError(e.to_string()))?;
+        let mut rs = ResultSet::new(vec!["name".to_string(), "id".to_string()]);
+        for meta in &graphs {
+            rs.add_record(vec![
+                Value::String(meta.name.clone()),
+                Value::String(meta.id.0.to_string()),
+            ]);
+        }
         Ok(rs)
     }
 

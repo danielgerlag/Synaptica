@@ -26,6 +26,7 @@ use proto::{
     CreateIndexRequest, CreateIndexResponse, DropIndexRequest, DropIndexResponse,
     GetMetricsRequest, GetMetricsResponse, GetSchemaRequest, GetSchemaResponse, GqlList,
     GqlMap, GqlValue, HealthRequest, HealthResponse, IndexInfo, LabelInfo, LabelSchema,
+    ListGraphsRequest, ListGraphsResponse, GraphInfo,
     ListIndexesRequest, ListIndexesResponse, ListLabelsRequest, ListLabelsResponse,
     QueryRequest, QueryResponse, QueryStats, RollbackTransactionRequest,
     RollbackTransactionResponse, Row,
@@ -40,6 +41,27 @@ pub struct SynapticaServiceImpl {
     pub applier: Option<Arc<StateMachineApplier>>,
     /// This node's ID in the cluster.
     pub node_id: Option<u64>,
+}
+
+impl SynapticaServiceImpl {
+    /// Resolve a graph_name from a request to a GraphId.
+    /// Falls back to the server's default graph if the name is empty.
+    fn resolve_graph_id(&self, graph_name: &str) -> GraphId {
+        if graph_name.is_empty() {
+            self.default_graph_id
+        } else {
+            GraphId::from_name(graph_name)
+        }
+    }
+
+    /// Get the display name for a graph_name request field.
+    fn resolve_graph_name(&self, graph_name: &str) -> String {
+        if graph_name.is_empty() {
+            self.default_graph_id.0.to_string()
+        } else {
+            graph_name.to_string()
+        }
+    }
 }
 
 /// RAII guard for ACTIVE_CONNECTIONS gauge — decrements on drop.
@@ -66,7 +88,8 @@ impl SynapticaService for SynapticaServiceImpl {
         let _conn_guard = ConnectionGuard::new();
         let req = request.into_inner();
         let start = std::time::Instant::now();
-        let graph_name = self.default_graph_id.0.to_string();
+        let graph_name = self.resolve_graph_name(&req.graph_name);
+        let graph_id = self.resolve_graph_id(&req.graph_name);
 
         tracing::info!(query = %req.query, graph = %graph_name, "executing query");
 
@@ -97,7 +120,7 @@ impl SynapticaService for SynapticaServiceImpl {
         }
 
         // Read path (or standalone mode): execute locally
-        self.execute_local(&program, &graph_name, start)
+        self.execute_local(&program, &graph_name, &graph_id, start)
     }
 
     type ExecuteQueryStreamStream =
@@ -211,8 +234,9 @@ impl SynapticaService for SynapticaServiceImpl {
         &self,
         request: Request<ListLabelsRequest>,
     ) -> Result<Response<ListLabelsResponse>, Status> {
-        let _graph_name = request.into_inner().graph_name;
-        let graph_id = &self.default_graph_id;
+        let req = request.into_inner();
+        let graph_id = self.resolve_graph_id(&req.graph_name);
+        let graph_id = &graph_id;
 
         let nodes = self
             .storage
@@ -254,8 +278,9 @@ impl SynapticaService for SynapticaServiceImpl {
         &self,
         request: Request<GetSchemaRequest>,
     ) -> Result<Response<GetSchemaResponse>, Status> {
-        let _graph_name = request.into_inner().graph_name;
-        let graph_id = &self.default_graph_id;
+        let req = request.into_inner();
+        let graph_id = self.resolve_graph_id(&req.graph_name);
+        let graph_id = &graph_id;
 
         let nodes = self
             .storage
@@ -317,8 +342,9 @@ impl SynapticaService for SynapticaServiceImpl {
         &self,
         request: Request<ListIndexesRequest>,
     ) -> Result<Response<ListIndexesResponse>, Status> {
-        let _graph_name = request.into_inner().graph_name;
-        let graph_id = &self.default_graph_id;
+        let req = request.into_inner();
+        let graph_id = self.resolve_graph_id(&req.graph_name);
+        let graph_id = &graph_id;
 
         let mgr = IndexManager::new(self.storage.raw_db().clone());
         let defs = mgr
@@ -347,7 +373,7 @@ impl SynapticaService for SynapticaServiceImpl {
         request: Request<CreateIndexRequest>,
     ) -> Result<Response<CreateIndexResponse>, Status> {
         let req = request.into_inner();
-        let graph_id = self.default_graph_id;
+        let graph_id = self.resolve_graph_id(&req.graph_name);
 
         let entity_type = match req.entity_type.as_str() {
             "node" => IndexEntityType::Node,
@@ -387,7 +413,8 @@ impl SynapticaService for SynapticaServiceImpl {
         request: Request<DropIndexRequest>,
     ) -> Result<Response<DropIndexResponse>, Status> {
         let req = request.into_inner();
-        let graph_id = &self.default_graph_id;
+        let graph_id = self.resolve_graph_id(&req.graph_name);
+        let graph_id = &graph_id;
 
         let mgr = IndexManager::new(self.storage.raw_db().clone());
         match mgr.drop_index(graph_id, &req.name) {
@@ -436,6 +463,27 @@ impl SynapticaService for SynapticaServiceImpl {
 
         Ok(Response::new(GetMetricsResponse { gauges, counters }))
     }
+
+    #[tracing::instrument(skip(self, _request))]
+    async fn list_graphs(
+        &self,
+        _request: Request<ListGraphsRequest>,
+    ) -> Result<Response<ListGraphsResponse>, Status> {
+        let metas = self
+            .storage
+            .list_graphs()
+            .map_err(|e| Status::internal(format!("storage error: {}", e)))?;
+
+        let graphs = metas
+            .into_iter()
+            .map(|m| GraphInfo {
+                name: m.name,
+                id: m.id.0.to_string(),
+            })
+            .collect();
+
+        Ok(Response::new(ListGraphsResponse { graphs }))
+    }
 }
 
 impl SynapticaServiceImpl {
@@ -444,6 +492,7 @@ impl SynapticaServiceImpl {
         &self,
         program: &synaptica_gql::ast::GqlProgram,
         graph_name: &str,
+        graph_id: &GraphId,
         start: std::time::Instant,
     ) -> Result<Response<QueryResponse>, Status> {
         let planner = QueryPlanner::new();
@@ -463,7 +512,7 @@ impl SynapticaServiceImpl {
         };
 
         let engine = ExecutionEngine::new(&self.storage);
-        let result_set = match engine.execute_plan(&plan, &self.default_graph_id) {
+        let result_set = match engine.execute_plan(&plan, graph_id) {
             Ok(rs) => rs,
             Err(e) => {
                 let elapsed = start.elapsed().as_secs_f64();

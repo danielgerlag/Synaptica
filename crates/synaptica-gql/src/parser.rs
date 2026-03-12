@@ -262,6 +262,7 @@ impl Parser {
             Token::Remove => self.parse_remove_statement(),
             Token::Create => self.parse_create_statement(),
             Token::Drop => self.parse_drop_statement(),
+            Token::List => self.parse_list_statement(),
             _ => Err(self.error(format!("unexpected token {:?}", self.peek()))),
         }
     }
@@ -596,6 +597,27 @@ impl Parser {
                 Ok(GqlStatement::DropGraph(DropGraphStatement { name, if_exists }))
             }
             _ => Err(self.error(format!("expected GRAPH or INDEX after DROP, found {:?}", self.peek()))),
+        }
+    }
+
+    fn parse_list_statement(&mut self) -> Result<GqlStatement, ParseError> {
+        self.expect(&Token::List)?;
+        match self.peek() {
+            Token::Graph => {
+                self.advance();
+                // Accept both "LIST GRAPH" and "LIST GRAPHS" (the 'S' is an ident)
+                if let Token::Ident(s) = self.peek() {
+                    if s.eq_ignore_ascii_case("s") || s.eq_ignore_ascii_case("graphs") {
+                        self.advance();
+                    }
+                }
+                Ok(GqlStatement::ListGraphs)
+            }
+            Token::Ident(s) if s.eq_ignore_ascii_case("GRAPHS") => {
+                self.advance();
+                Ok(GqlStatement::ListGraphs)
+            }
+            _ => Err(self.error(format!("expected GRAPHS after LIST, found {:?}", self.peek()))),
         }
     }
 

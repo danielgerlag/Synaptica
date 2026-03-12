@@ -41,6 +41,9 @@ service SynapticaService {
 
   // Get server metrics.
   rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
+
+  // List all available graphs.
+  rpc ListGraphs(ListGraphsRequest) returns (ListGraphsResponse);
 }
 
 message QueryRequest {
@@ -229,4 +232,15 @@ message GetMetricsRequest {}
 message GetMetricsResponse {
   map<string, double> gauges = 1;
   map<string, int64> counters = 2;
+}
+
+message ListGraphsRequest {}
+
+message ListGraphsResponse {
+  repeated GraphInfo graphs = 1;
+}
+
+message GraphInfo {
+  string name = 1;
+  string id = 2;
 }

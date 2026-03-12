@@ -146,6 +146,18 @@ pub enum LogicalPlan {
     DropIndex {
         name: String,
     },
+    /// DDL: create a new graph.
+    CreateGraph {
+        name: String,
+        if_not_exists: bool,
+    },
+    /// DDL: drop a graph.
+    DropGraph {
+        name: String,
+        if_exists: bool,
+    },
+    /// DDL: list all graphs.
+    ListGraphs,
 }
 
 // ---------------------------------------------------------------------------
@@ -594,6 +606,19 @@ impl QueryPlanner {
                     name: di.name.clone(),
                 })
             }
+            GqlStatement::CreateGraph(cg) => {
+                Ok(LogicalPlan::CreateGraph {
+                    name: cg.name.clone(),
+                    if_not_exists: cg.if_not_exists,
+                })
+            }
+            GqlStatement::DropGraph(dg) => {
+                Ok(LogicalPlan::DropGraph {
+                    name: dg.name.clone(),
+                    if_exists: dg.if_exists,
+                })
+            }
+            GqlStatement::ListGraphs => Ok(LogicalPlan::ListGraphs),
             _ => Err(PlanError::UnsupportedStatement),
         }
     }
