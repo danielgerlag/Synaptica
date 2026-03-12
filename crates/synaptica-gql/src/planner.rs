@@ -88,9 +88,13 @@ pub enum LogicalPlan {
         target: Box<LogicalPlan>,
         properties: Vec<(String, Expression)>,
     },
-    /// Delete nodes produced by `input`.
+    /// Delete nodes/edges produced by `input`.
     DeleteNode {
         input: Box<LogicalPlan>,
+        /// Variable names to delete. If empty, deletes all nodes/edges in the result.
+        targets: Vec<String>,
+        /// If true, DETACH DELETE (also deletes connected edges for node targets).
+        detach: bool,
     },
     /// Set a property on nodes/edges produced by `input`.
     SetProperty {
@@ -282,6 +286,22 @@ impl QueryPlanner {
                                 edge_variable: edge_pat.variable.clone(),
                                 target_variable: target_node.and_then(|n| n.variable.clone()),
                             };
+
+                            // Apply inline property filters on edge
+                            current_plan = self.apply_inline_property_filters(
+                                current_plan,
+                                &edge_pat.properties,
+                                edge_pat.variable.as_deref(),
+                            );
+
+                            // Apply inline property filters on target node
+                            if let Some(tn) = target_node {
+                                current_plan = self.apply_inline_property_filters(
+                                    current_plan,
+                                    &tn.properties,
+                                    tn.variable.as_deref(),
+                                );
+                            }
                         }
 
                         scans.push(current_plan);
@@ -521,9 +541,18 @@ impl QueryPlanner {
                 let base = input.ok_or(PlanError::Internal(
                     "DELETE requires a preceding MATCH".into(),
                 ))?;
-                // For now, just wrap the input in DeleteNode
+                // Extract target variable names from expressions
+                let targets: Vec<String> = d.targets.iter().filter_map(|expr| {
+                    if let Expression::Identifier(name) = expr {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                }).collect();
                 Ok(LogicalPlan::DeleteNode {
                     input: Box::new(base),
+                    targets,
+                    detach: d.detach,
                 })
             }
             GqlStatement::Set(s) => {

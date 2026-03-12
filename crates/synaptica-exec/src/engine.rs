@@ -1,7 +1,7 @@
 use crate::expression::evaluate;
 use crate::operators::ExecutionContext;
 use crate::result::{Record, ResultSet};
-use synaptica_core::graph::{Edge, GraphId, Label, Node, NodeId};
+use synaptica_core::graph::{Edge, EdgeId, GraphId, Label, Node, NodeId};
 use synaptica_core::types::Value;
 use synaptica_gql::ast::{Direction, Expression, SortDirection, BinaryOp, Literal};
 use synaptica_gql::planner::LogicalPlan;
@@ -124,9 +124,9 @@ impl<'a> ExecutionEngine<'a> {
                 let rs = self.execute_node(input, ctx)?;
                 self.exec_expand(rs, edge_label, direction, target_labels, edge_variable, target_variable, ctx)
             }
-            LogicalPlan::DeleteNode { input } => {
+            LogicalPlan::DeleteNode { input, ref targets, detach } => {
                 let rs = self.execute_node(input, ctx)?;
-                self.exec_delete_nodes(rs, ctx)
+                self.exec_delete_nodes(rs, targets, *detach, ctx)
             }
             LogicalPlan::SetProperty { input, target, property, value } => {
                 let rs = self.execute_node(input, ctx)?;
@@ -909,19 +909,52 @@ impl<'a> ExecutionEngine<'a> {
     fn exec_delete_nodes(
         &self,
         rs: ResultSet,
+        targets: &[String],
+        detach: bool,
         ctx: &ExecutionContext<'_>,
     ) -> Result<ResultSet, ExecError> {
         use std::collections::HashSet;
         let mut deleted = 0u64;
-        let mut seen = HashSet::new();
+        let mut seen_nodes = HashSet::new();
+        let mut seen_edges = HashSet::new();
 
+        // Collect values to delete — either specific targets or all values
+        let has_targets = !targets.is_empty();
+
+        // First pass: delete edges
         for record in &rs.records {
-            for val in &record.values {
+            let values_to_check: Vec<&Value> = if has_targets {
+                targets.iter().filter_map(|t| record.get(t)).collect()
+            } else {
+                record.values.iter().collect()
+            };
+
+            for val in &values_to_check {
+                if let Value::Edge { ref id, .. } = val {
+                    if seen_edges.insert(id.clone()) {
+                        let eid = EdgeId(Uuid::parse_str(id)
+                            .map_err(|e| ExecError::Internal(format!("invalid edge id: {}", e)))?);
+                        ctx.storage.delete_edge(&ctx.graph_id, &eid)
+                            .map_err(|e| ExecError::Internal(e.to_string()))?;
+                        deleted += 1;
+                    }
+                }
+            }
+        }
+
+        // Second pass: delete nodes (only if targets include nodes, or no targets specified)
+        for record in &rs.records {
+            let values_to_check: Vec<&Value> = if has_targets {
+                targets.iter().filter_map(|t| record.get(t)).collect()
+            } else {
+                record.values.iter().collect()
+            };
+
+            for val in &values_to_check {
                 if let Value::Node { ref id, .. } = val {
-                    if seen.insert(id.clone()) {
+                    if seen_nodes.insert(id.clone()) {
                         let nid = NodeId(Uuid::parse_str(id)
                             .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?);
-                        // Unindex before deleting
                         if let Ok(node) = ctx.storage.get_node(&ctx.graph_id, &nid) {
                             self.unindex_node_on_delete(&node, ctx);
                         }
@@ -954,34 +987,59 @@ impl<'a> ExecutionEngine<'a> {
             let val = evaluate(value_expr, record)?;
 
             if let Some(tgt) = target {
-                if let Some(node_val) = record.get(tgt) {
-                    if let Value::Node { ref id, .. } = node_val {
-                        let nid = NodeId(Uuid::parse_str(id)
-                            .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?);
-                        let mut node = ctx.storage.get_node(&ctx.graph_id, &nid)
-                            .map_err(|e| ExecError::Internal(e.to_string()))?;
-                        // Unindex old value, update, re-index
-                        self.unindex_node_on_delete(&node, ctx);
-                        node.properties.insert(property.to_string(), val.clone());
-                        ctx.storage.put_node(&node)
-                            .map_err(|e| ExecError::Internal(e.to_string()))?;
-                        self.index_node_on_write(&node, ctx);
-                        modified += 1;
+                if let Some(entity_val) = record.get(tgt) {
+                    match entity_val {
+                        Value::Node { ref id, .. } => {
+                            let nid = NodeId(Uuid::parse_str(id)
+                                .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?);
+                            let mut node = ctx.storage.get_node(&ctx.graph_id, &nid)
+                                .map_err(|e| ExecError::Internal(e.to_string()))?;
+                            self.unindex_node_on_delete(&node, ctx);
+                            node.properties.insert(property.to_string(), val.clone());
+                            ctx.storage.put_node(&node)
+                                .map_err(|e| ExecError::Internal(e.to_string()))?;
+                            self.index_node_on_write(&node, ctx);
+                            modified += 1;
+                        }
+                        Value::Edge { ref id, .. } => {
+                            let eid = EdgeId(Uuid::parse_str(id)
+                                .map_err(|e| ExecError::Internal(format!("invalid edge id: {}", e)))?);
+                            let mut edge = ctx.storage.get_edge(&ctx.graph_id, &eid)
+                                .map_err(|e| ExecError::Internal(e.to_string()))?;
+                            edge.properties.insert(property.to_string(), val.clone());
+                            ctx.storage.put_edge(&edge)
+                                .map_err(|e| ExecError::Internal(e.to_string()))?;
+                            modified += 1;
+                        }
+                        _ => {}
                     }
                 }
             } else {
                 for rv in &record.values {
-                    if let Value::Node { ref id, .. } = rv {
-                        let nid = NodeId(Uuid::parse_str(id)
-                            .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?);
-                        let mut node = ctx.storage.get_node(&ctx.graph_id, &nid)
-                            .map_err(|e| ExecError::Internal(e.to_string()))?;
-                        self.unindex_node_on_delete(&node, ctx);
-                        node.properties.insert(property.to_string(), val.clone());
-                        ctx.storage.put_node(&node)
-                            .map_err(|e| ExecError::Internal(e.to_string()))?;
-                        self.index_node_on_write(&node, ctx);
-                        modified += 1;
+                    match rv {
+                        Value::Node { ref id, .. } => {
+                            let nid = NodeId(Uuid::parse_str(id)
+                                .map_err(|e| ExecError::Internal(format!("invalid node id: {}", e)))?);
+                            let mut node = ctx.storage.get_node(&ctx.graph_id, &nid)
+                                .map_err(|e| ExecError::Internal(e.to_string()))?;
+                            self.unindex_node_on_delete(&node, ctx);
+                            node.properties.insert(property.to_string(), val.clone());
+                            ctx.storage.put_node(&node)
+                                .map_err(|e| ExecError::Internal(e.to_string()))?;
+                            self.index_node_on_write(&node, ctx);
+                            modified += 1;
+                        }
+                        Value::Edge { ref id, .. } => {
+                            let eid = EdgeId(Uuid::parse_str(id)
+                                .map_err(|e| ExecError::Internal(format!("invalid edge id: {}", e)))?);
+                            let mut edge = ctx.storage.get_edge(&ctx.graph_id, &eid)
+                                .map_err(|e| ExecError::Internal(e.to_string()))?;
+                            edge.properties.insert(property.to_string(), val.clone());
+                            ctx.storage.put_edge(&edge)
+                                .map_err(|e| ExecError::Internal(e.to_string()))?;
+                            modified += 1;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1219,8 +1277,10 @@ impl<'a> ExecutionEngine<'a> {
                 edge_variable: edge_variable.clone(),
                 target_variable: target_variable.clone(),
             },
-            LogicalPlan::DeleteNode { input } => LogicalPlan::DeleteNode {
+            LogicalPlan::DeleteNode { input, targets, detach } => LogicalPlan::DeleteNode {
                 input: Box::new(self.optimize(input, ctx)),
+                targets: targets.clone(),
+                detach: *detach,
             },
             LogicalPlan::SetProperty { input, target, property, value } => LogicalPlan::SetProperty {
                 input: Box::new(self.optimize(input, ctx)),
