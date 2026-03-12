@@ -659,8 +659,114 @@ fn run_expression_benchmarks(results: &mut Vec<BenchResult>) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Report printing
+// Index vs full-scan benchmarks
 // ═══════════════════════════════════════════════════════════════════════════
+
+fn run_index_benchmarks(results: &mut Vec<BenchResult>) {
+    use synaptica_storage::index::{IndexDefinition, IndexEntityType, IndexManager};
+
+    for &size in &[1_000, 10_000, 50_000] {
+        let label = format!("{}",  size);
+
+        // --- Full scan (no index) ---
+        {
+            let env = TestEnv::new();
+            env.seed_persons(size);
+            let target_name = format!("Person_{}", size / 2);
+            let query = format!(
+                "MATCH (p:Person) WHERE p.name = '{}' RETURN p.name, p.age",
+                target_name
+            );
+            let program = parser::parse(&query).unwrap();
+            let plan = QueryPlanner::new().plan(&program).unwrap();
+            let engine = ExecutionEngine::new(&env.storage);
+            let gid = env.graph_id;
+            results.push(bench(
+                &format!("scan_no_idx/{}", label),
+                "index",
+                || { engine.execute_plan(&plan, &gid).unwrap(); },
+                3,
+            ));
+        }
+
+        // --- Indexed scan ---
+        {
+            let env = TestEnv::new();
+            env.seed_persons(size);
+            // Create index and backfill
+            env.execute_gql("CREATE INDEX idx_name FOR (n:Person) ON (n.name)");
+            let target_name = format!("Person_{}", size / 2);
+            let query = format!(
+                "MATCH (p:Person) WHERE p.name = '{}' RETURN p.name, p.age",
+                target_name
+            );
+            let program = parser::parse(&query).unwrap();
+            let plan = QueryPlanner::new().plan(&program).unwrap();
+            let engine = ExecutionEngine::new(&env.storage);
+            let gid = env.graph_id;
+            results.push(bench(
+                &format!("scan_with_idx/{}", label),
+                "index",
+                || { engine.execute_plan(&plan, &gid).unwrap(); },
+                3,
+            ));
+        }
+    }
+}
+
+fn print_index_comparison(results: &[BenchResult]) {
+    let idx_results: Vec<&BenchResult> = results.iter()
+        .filter(|r| r.category == "index")
+        .collect();
+
+    if idx_results.is_empty() {
+        return;
+    }
+
+    let bar = "═".repeat(100);
+    let thin = "─".repeat(100);
+    println!();
+    println!("  {}", bar);
+    println!("  Index vs Full-Scan Comparison");
+    println!("  {}", bar);
+    println!();
+    println!("  {:<30} {:>12} {:>12} {:>12} {:>12}", 
+             "Dataset Size", "Full Scan", "Index Scan", "Speedup", "");
+    println!("  {}", thin);
+
+    // Group by dataset size
+    let sizes: Vec<String> = idx_results.iter()
+        .filter(|r| r.name.starts_with("scan_no_idx/"))
+        .map(|r| r.name.strip_prefix("scan_no_idx/").unwrap().to_string())
+        .collect();
+
+    for size in &sizes {
+        let no_idx = idx_results.iter()
+            .find(|r| r.name == format!("scan_no_idx/{}", size))
+            .unwrap();
+        let with_idx = idx_results.iter()
+            .find(|r| r.name == format!("scan_with_idx/{}", size))
+            .unwrap();
+        
+        let speedup = no_idx.median_ns as f64 / with_idx.median_ns as f64;
+        let indicator = if speedup > 10.0 { "🚀" }
+            else if speedup > 5.0 { "⚡" }
+            else if speedup > 2.0 { "✓✓" }
+            else { "✓" };
+
+        println!("  {:<30} {:>12} {:>12} {:>11.1}x {}",
+                 format!("{} nodes", size),
+                 format_duration(no_idx.median_ns),
+                 format_duration(with_idx.median_ns),
+                 speedup,
+                 indicator);
+    }
+
+    println!("  {}", thin);
+    println!("  Legend: 🚀 >10x  ⚡ >5x  ✓✓ >2x  ✓ faster");
+    println!("  {}", bar);
+    println!();
+}
 
 fn print_report(report: &Report) {
     let bar = "═".repeat(95);
@@ -809,10 +915,16 @@ fn main() {
     println!(" done ({} benchmarks)", results.len() - n);
 
     let n = results.len();
-    print!("  [7/7] Pipeline & expression benchmarks...");
+    print!("  [7/8] Pipeline & expression benchmarks...");
     std::io::stdout().flush().unwrap();
     run_pipeline_benchmarks(&mut results);
     run_expression_benchmarks(&mut results);
+    println!(" done ({} benchmarks)", results.len() - n);
+
+    let n = results.len();
+    print!("  [8/8] Index benchmarks...");
+    std::io::stdout().flush().unwrap();
+    run_index_benchmarks(&mut results);
     println!(" done ({} benchmarks)", results.len() - n);
 
     let report = Report {
@@ -823,6 +935,7 @@ fn main() {
 
     // Print the report
     print_report(&report);
+    print_index_comparison(&report.results);
 
     // Save if requested
     if let Some(name) = &save_name {
