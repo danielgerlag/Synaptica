@@ -128,9 +128,16 @@ metrics_enabled = true
 metrics_addr = "0.0.0.0:9091"
 
 [cluster]
-node_id = "node-1"
-listen_addr = "0.0.0.0:9091"
-peers = ["node-2:9091", "node-3:9091"]
+node_id = 1
+cluster_addr = "0.0.0.0:9191"
+
+[[cluster.peers]]
+node_id = 2
+address = "10.0.0.2:9191"
+
+[[cluster.peers]]
+node_id = 3
+address = "10.0.0.3:9191"
 ```
 
 ## GQL Support
@@ -208,10 +215,11 @@ All keys use big-endian encoding for correct lexicographic ordering, enabling ef
 Synaptica supports distributed deployment with:
 
 - **Raft Consensus** — Leader election and log replication via `openraft`
-- **Range-Based Partitioning** — Graph data split into key ranges across nodes
-- **Automatic Rebalancing** — Partition split/merge based on size thresholds
-- **Query Routing** — Coordinator decomposes queries across partitions
-- **Failure Detection** — Health checking and automatic failover
+- **Automatic Failover** — Leader crash detected in 1.5–3 s, new leader elected automatically
+- **Write Replication** — All mutations committed to majority before acknowledgment
+- **Local Reads** — Queries execute on any node for low-latency reads
+
+See **[CLUSTER.md](CLUSTER.md)** for the full cluster operations guide, including setup instructions, configuration reference, failure scenarios, and recovery time benchmarks.
 
 ## Development
 
