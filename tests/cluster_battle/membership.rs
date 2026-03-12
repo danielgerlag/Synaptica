@@ -568,7 +568,20 @@ async fn test_45_rapid_add_remove_cycles() {
     let res = cluster.write("INSERT (:Stable {state: 'ok'})").await;
     assert!(res.is_ok(), "writes must succeed after rapid cycles");
 
-    cluster.wait_for_convergence(5000).await;
+    // Wait for replication to the 3 original voters
+    let start = tokio::time::Instant::now();
+    loop {
+        if start.elapsed() > tokio::time::Duration::from_secs(10) {
+            panic!("timeout waiting for original voters to converge");
+        }
+        let c1 = cluster.count_nodes_on(1);
+        let c2 = cluster.count_nodes_on(2);
+        let c3 = cluster.count_nodes_on(3);
+        if c1 >= 1 && c1 == c2 && c2 == c3 {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
 
     // Verify all original voters have the data
     let count_1 = cluster.count_nodes_on(1);

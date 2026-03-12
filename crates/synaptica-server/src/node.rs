@@ -68,8 +68,11 @@ impl NodeRuntime {
         let applier = Arc::new(StateMachineApplier::new(self.storage.clone()));
         self.applier = Some(applier.clone());
 
-        // Create RocksDB-backed log store sharing the same DB
-        let log_store = Arc::new(RocksLogStore::new(self.storage.raw_db().clone()));
+        // Create RocksDB-backed log store sharing the same DB, with the applier
+        let log_store = Arc::new(RocksLogStore::with_applier(
+            self.storage.raw_db().clone(),
+            applier.clone(),
+        ));
 
         // Create Raft configuration
         let raft_config = openraft::Config {

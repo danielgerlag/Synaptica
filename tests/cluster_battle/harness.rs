@@ -327,11 +327,18 @@ impl TestCluster {
         }
     }
 
-    /// Find the current leader node ID.
+    /// Find the current leader node ID (skipping blocked nodes).
     pub fn get_leader(&self) -> Option<NodeId> {
+        let blocked = self.router.blocked.try_read();
         for node in self.nodes.values() {
             let metrics = node.raft.metrics().borrow().clone();
             if let Some(leader) = metrics.current_leader {
+                // Skip if the reported leader is blocked (stale info)
+                if let Ok(ref b) = blocked {
+                    if b.contains(&leader) {
+                        continue;
+                    }
+                }
                 // Verify the leader node itself agrees
                 if let Some(leader_node) = self.nodes.get(&leader) {
                     let leader_metrics = leader_node.raft.metrics().borrow().clone();

@@ -19,7 +19,8 @@ use openraft::Vote;
 use rocksdb::{DBWithThreadMode, MultiThreaded};
 use tokio::sync::RwLock;
 
-use crate::raft::{NodeId, RaftResponse, TypeConfig};
+use crate::raft::{NodeId, RaftRequest, RaftResponse, TypeConfig};
+use crate::state_machine::StateMachineApplier;
 use synaptica_storage::cf::ColumnFamilies;
 
 const VOTE_KEY: &[u8] = b"raft_vote";
@@ -34,6 +35,7 @@ const LAST_MEMBERSHIP_KEY: &[u8] = b"raft_last_membership";
 /// Stores metadata (vote, purged marker, applied state, membership) in RAFT_META.
 pub struct RocksLogStore {
     db: Arc<DBWithThreadMode<MultiThreaded>>,
+    applier: Option<Arc<StateMachineApplier>>,
     current_snapshot: RwLock<Option<StoredSnapshot>>,
 }
 
@@ -47,6 +49,19 @@ impl RocksLogStore {
     pub fn new(db: Arc<DBWithThreadMode<MultiThreaded>>) -> Self {
         Self {
             db,
+            applier: None,
+            current_snapshot: RwLock::new(None),
+        }
+    }
+
+    /// Create a log store with a state machine applier that executes committed mutations.
+    pub fn with_applier(
+        db: Arc<DBWithThreadMode<MultiThreaded>>,
+        applier: Arc<StateMachineApplier>,
+    ) -> Self {
+        Self {
+            db,
+            applier: Some(applier),
             current_snapshot: RwLock::new(None),
         }
     }
@@ -342,12 +357,17 @@ impl RaftStorage<TypeConfig> for Arc<RocksLogStore> {
                         rows_affected: 0,
                     });
                 }
-                openraft::EntryPayload::Normal(ref _req) => {
-                    responses.push(RaftResponse {
-                        success: true,
-                        error: None,
-                        rows_affected: 0,
-                    });
+                openraft::EntryPayload::Normal(ref req) => {
+                    let response = if let Some(ref applier) = self.applier {
+                        applier.apply(req)
+                    } else {
+                        RaftResponse {
+                            success: true,
+                            error: None,
+                            rows_affected: 0,
+                        }
+                    };
+                    responses.push(response);
                 }
             }
         }

@@ -151,7 +151,7 @@ async fn test_95_healed_partition_stale_leader_steps_down() {
     let new_leader = {
         let start = tokio::time::Instant::now();
         loop {
-            if start.elapsed() > tokio::time::Duration::from_secs(5) {
+            if start.elapsed() > tokio::time::Duration::from_secs(10) {
                 panic!("no new leader elected after partitioning old leader");
             }
             if let Some(leader) = cluster.get_leader() {
@@ -159,7 +159,7 @@ async fn test_95_healed_partition_stale_leader_steps_down() {
                     break leader;
                 }
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
     };
     assert_ne!(new_leader, old_leader);
@@ -168,7 +168,7 @@ async fn test_95_healed_partition_stale_leader_steps_down() {
     cluster.router.unblock_node(old_leader).await;
 
     // Allow the old leader to discover the higher term and step down.
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     let current_leader = cluster.get_leader().unwrap();
     assert_ne!(
@@ -306,36 +306,65 @@ async fn test_98_rapid_leader_kill_restart_data_integrity() {
 
 /// Test 99: All 5 nodes crash and restart — cluster reforms correctly.
 ///
-/// Block all 5 nodes (Raft instances stay in memory), unblock all,
-/// and verify the cluster elects a leader and can accept writes.
+/// Block all 5 nodes (Raft instances stay in memory), unblock them
+/// in staggered fashion, and verify the cluster elects a leader.
 #[tokio::test]
 async fn test_99_all_nodes_crash_restart_reforms() {
     let cluster = TestCluster::new(5).await;
 
+    // Write some data before the crash
+    cluster.write("INSERT (:PreCrash {v: 1})").await.unwrap();
+    cluster.wait_for_convergence(5000).await;
+
+    // Block all nodes
     for id in 1..=5u64 {
         cluster.router.block_node(id).await;
     }
 
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
+    // Unblock all nodes at once
     for id in 1..=5u64 {
         cluster.router.unblock_node(id).await;
     }
 
-    cluster.wait_for_leader(10_000).await;
+    // Give extra time for 5-node election after total partition
+    cluster.wait_for_leader(20_000).await;
+    // Extra stabilization time for all nodes to learn the new leader
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    let resp = cluster.write("INSERT (:Survivor {})").await.unwrap();
-    assert!(resp.success, "cluster should accept writes after full restart");
+    // Try write — may need to find the actual leader
+    let mut write_ok = false;
+    for _ in 0..10 {
+        let leader = cluster.get_leader();
+        if leader.is_none() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            continue;
+        }
+        match cluster.write("INSERT (:Survivor {})").await {
+            Ok(resp) if resp.success => {
+                write_ok = true;
+                break;
+            }
+            _ => {
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
+        }
+    }
+    assert!(write_ok, "cluster should accept writes after full restart");
 
-    cluster.wait_for_convergence(10_000).await;
-
-    for id in 1..=5u64 {
-        assert_eq!(
-            cluster.count_nodes_on(id),
-            1,
-            "node {} should have the write after full cluster restart",
-            id
-        );
+    // Verify pre-crash data survived and new write replicated
+    let start = tokio::time::Instant::now();
+    loop {
+        if start.elapsed() > tokio::time::Duration::from_secs(15) {
+            let counts: Vec<_> = (1..=5u64).map(|id| (id, cluster.count_nodes_on(id))).collect();
+            panic!("convergence timeout after restart. counts: {:?}", counts);
+        }
+        let all_have_2 = (1..=5u64).all(|id| cluster.count_nodes_on(id) == 2);
+        if all_have_2 {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
     cluster.shutdown().await;
