@@ -215,9 +215,14 @@ impl SynapticaBackend for LocalBackend {
         let defs = mgr.list_indexes(&graph_id)?;
         Ok(defs
             .into_iter()
-            .map(|d| IndexInfo {
-                label: d.name.clone(),
-                property: d.property_names.join(", "),
+            .map(|d| {
+                // Index names follow convention: idx_{label}_{property}
+                let parts: Vec<&str> = d.name.splitn(3, '_').collect();
+                let label = if parts.len() >= 2 { parts[1].to_string() } else { d.name.clone() };
+                IndexInfo {
+                    label,
+                    property: d.property_names.join(", "),
+                }
             })
             .collect())
     }
@@ -228,7 +233,11 @@ impl SynapticaBackend for LocalBackend {
         property: &str,
         graph: &str,
     ) -> anyhow::Result<String> {
-        let query = format!("CREATE INDEX ON :{}({})", label, property);
+        let idx_name = format!("idx_{}_{}", label, property);
+        let query = format!(
+            "CREATE INDEX {} FOR (v:{}) ON (v.{})",
+            idx_name, label, property
+        );
         let result = self.execute_query(&query, graph).await?;
         if let Some(err) = result.error {
             anyhow::bail!(err);
@@ -242,7 +251,8 @@ impl SynapticaBackend for LocalBackend {
         property: &str,
         graph: &str,
     ) -> anyhow::Result<String> {
-        let query = format!("DROP INDEX ON :{}({})", label, property);
+        let idx_name = format!("idx_{}_{}", label, property);
+        let query = format!("DROP INDEX {}", idx_name);
         let result = self.execute_query(&query, graph).await?;
         if let Some(err) = result.error {
             anyhow::bail!(err);
