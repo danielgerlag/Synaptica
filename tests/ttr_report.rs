@@ -52,7 +52,9 @@ fn print_report(results: &[TimingResult]) {
     println!("                     SYNAPTICA CLUSTER -- TIME TO RECOVERY REPORT                                  ");
     println!("==================================================================================================");
     println!();
-    println!("  Config: heartbeat=100ms, election_timeout=300-600ms, in-process network (zero latency)");
+    println!(
+        "  Config: heartbeat=100ms, election_timeout=300-600ms, in-process network (zero latency)"
+    );
     println!("  Each scenario measured 3 times. All timings in milliseconds.");
     println!();
     println!("------------------------------------------+-------+---------+-------+-------+---------+--------");
@@ -110,11 +112,7 @@ async fn measure_leader_election(cluster: &TestCluster, old_leader: u64) -> Dura
 }
 
 /// Measure time until a specific node has the expected node count.
-async fn measure_replication_to(
-    cluster: &TestCluster,
-    node_id: u64,
-    expected: usize,
-) -> Duration {
+async fn measure_replication_to(cluster: &TestCluster, node_id: u64, expected: usize) -> Duration {
     let start = Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(30) {

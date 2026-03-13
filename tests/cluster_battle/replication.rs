@@ -13,20 +13,11 @@ use crate::cluster_battle::harness::TestCluster;
 
 /// Helper: create a standalone log store backed by a temp directory.
 /// Returns (store, storage, _dir) — keep `_dir` alive to prevent cleanup.
-fn standalone_log_store() -> (
-    Arc<RocksLogStore>,
-    Arc<StorageEngine>,
-    tempfile::TempDir,
-) {
+fn standalone_log_store() -> (Arc<RocksLogStore>, Arc<StorageEngine>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let storage = Arc::new(
-        StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap(),
-    );
+    let storage = Arc::new(StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap());
     let applier = Arc::new(StateMachineApplier::new(storage.clone()));
-    let store = Arc::new(RocksLogStore::with_applier(
-        storage.raw_db().clone(),
-        applier,
-    ));
+    let store = Arc::new(RocksLogStore::with_applier(storage.clone(), applier));
     (store, storage, dir)
 }
 
@@ -53,7 +44,10 @@ async fn test_16_single_write_replicates_to_all() {
 
     for id in 1..=3u64 {
         let count = cluster.count_nodes_on(id);
-        assert_eq!(count, 1, "node {id} should have 1 graph node, found {count}");
+        assert_eq!(
+            count, 1,
+            "node {id} should have 1 graph node, found {count}"
+        );
     }
 
     cluster.shutdown().await;
@@ -77,7 +71,10 @@ async fn test_17_fifty_writes_replicate() {
 
     for id in 1..=3u64 {
         let count = cluster.count_nodes_on(id);
-        assert_eq!(count, 50, "node {id} should have 50 graph nodes, found {count}");
+        assert_eq!(
+            count, 50,
+            "node {id} should have 50 graph nodes, found {count}"
+        );
     }
 
     cluster.shutdown().await;
@@ -111,7 +108,10 @@ async fn test_18_follower_catches_up_after_partition() {
     cluster.wait_for_convergence_count(5, 10_000).await;
 
     let count_after = cluster.count_nodes_on(follower);
-    assert_eq!(count_after, 5, "follower must catch up to 5 nodes, found {count_after}");
+    assert_eq!(
+        count_after, 5,
+        "follower must catch up to 5 nodes, found {count_after}"
+    );
 
     cluster.shutdown().await;
 }
@@ -123,11 +123,7 @@ async fn test_18_follower_catches_up_after_partition() {
 async fn test_19_log_entries_persist_in_rocksdb() {
     let (mut store, _storage, _dir) = standalone_log_store();
 
-    let entries = vec![
-        blank_entry(1, 1),
-        blank_entry(1, 2),
-        blank_entry(1, 3),
-    ];
+    let entries = vec![blank_entry(1, 1), blank_entry(1, 2), blank_entry(1, 3)];
     store.append_to_log(entries).await.unwrap();
 
     // Read back from the same store (backed by the same RocksDB)
@@ -214,7 +210,10 @@ async fn test_22_empty_log_range_returns_empty() {
 
     // Also test a specific range
     let entries2 = reader.try_get_log_entries(5..10).await.unwrap();
-    assert!(entries2.is_empty(), "range 5..10 on empty log must be empty");
+    assert!(
+        entries2.is_empty(),
+        "range 5..10 on empty log must be empty"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -268,9 +267,17 @@ async fn test_24_delete_conflict_logs() {
     // Only entries 1-5 should remain
     let mut reader = store.get_log_reader().await;
     let remaining = reader.try_get_log_entries(1..11).await.unwrap();
-    assert_eq!(remaining.len(), 5, "only entries 1-5 should remain after deleting from index 6");
+    assert_eq!(
+        remaining.len(),
+        5,
+        "only entries 1-5 should remain after deleting from index 6"
+    );
     for entry in &remaining {
-        assert!(entry.log_id.index <= 5, "entry index {} should be <= 5", entry.log_id.index);
+        assert!(
+            entry.log_id.index <= 5,
+            "entry index {} should be <= 5",
+            entry.log_id.index
+        );
     }
 
     // Verify deleted range is truly empty
@@ -287,16 +294,27 @@ async fn test_25_log_state_after_operations() {
 
     // Initially both should be None
     let state0 = store.get_log_state().await.unwrap();
-    assert!(state0.last_purged_log_id.is_none(), "initial last_purged must be None");
-    assert!(state0.last_log_id.is_none(), "initial last_log_id must be None");
+    assert!(
+        state0.last_purged_log_id.is_none(),
+        "initial last_purged must be None"
+    );
+    assert!(
+        state0.last_log_id.is_none(),
+        "initial last_log_id must be None"
+    );
 
     // Append entries 1-5
     let entries: Vec<_> = (1..=5).map(|i| blank_entry(1, i)).collect();
     store.append_to_log(entries).await.unwrap();
 
     let state1 = store.get_log_state().await.unwrap();
-    assert!(state1.last_purged_log_id.is_none(), "last_purged must still be None");
-    let last = state1.last_log_id.expect("last_log_id must be Some after append");
+    assert!(
+        state1.last_purged_log_id.is_none(),
+        "last_purged must still be None"
+    );
+    let last = state1
+        .last_log_id
+        .expect("last_log_id must be Some after append");
     assert_eq!(last.index, 5, "last_log_id.index must be 5");
 
     // Purge up to index 3
@@ -306,7 +324,10 @@ async fn test_25_log_state_after_operations() {
     let state2 = store.get_log_state().await.unwrap();
     assert_eq!(state2.last_purged_log_id, Some(purge_id));
     let last2 = state2.last_log_id.expect("last_log_id must still be Some");
-    assert_eq!(last2.index, 5, "last_log_id must still be 5 after partial purge");
+    assert_eq!(
+        last2.index, 5,
+        "last_log_id must still be 5 after partial purge"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -317,11 +338,7 @@ async fn test_26_non_contiguous_indices() {
     let (mut store, _storage, _dir) = standalone_log_store();
 
     // Append entries with gaps (indices 1, 5, 10)
-    let entries = vec![
-        blank_entry(1, 1),
-        blank_entry(1, 5),
-        blank_entry(1, 10),
-    ];
+    let entries = vec![blank_entry(1, 1), blank_entry(1, 5), blank_entry(1, 10)];
     store.append_to_log(entries).await.unwrap();
 
     // Each should be individually retrievable
@@ -386,7 +403,11 @@ async fn test_28_read_purged_range_returns_empty() {
     // Reading the purged range should return empty
     let mut reader = store.get_log_reader().await;
     let purged = reader.try_get_log_entries(1..8).await.unwrap();
-    assert!(purged.is_empty(), "purged range 1..8 must return empty, got {}", purged.len());
+    assert!(
+        purged.is_empty(),
+        "purged range 1..8 must return empty, got {}",
+        purged.len()
+    );
 
     // Entries 8-10 should still be readable
     let remaining = reader.try_get_log_entries(8..11).await.unwrap();
@@ -418,11 +439,19 @@ async fn test_29_vote_persistence_cycle() {
     let v2 = openraft::Vote::new(7, 1);
     store.save_vote(&v2).await.unwrap();
 
-    let read2 = store.read_vote().await.unwrap().expect("updated vote must exist");
+    let read2 = store
+        .read_vote()
+        .await
+        .unwrap()
+        .expect("updated vote must exist");
     assert_eq!(read2.leader_id().voted_for(), Some(1));
 
     // Re-read to confirm persistence (not just cached)
-    let read3 = store.read_vote().await.unwrap().expect("vote must still persist");
+    let read3 = store
+        .read_vote()
+        .await
+        .unwrap()
+        .expect("vote must still persist");
     assert_eq!(read3.leader_id().voted_for(), Some(1));
 }
 
@@ -437,10 +466,7 @@ async fn test_30_committed_index_advances() {
 
     // Record the committed index before writes
     let metrics_before = cluster.metrics(leader);
-    let committed_before = metrics_before
-        .last_applied
-        .map(|l| l.index)
-        .unwrap_or(0);
+    let committed_before = metrics_before.last_applied.map(|l| l.index).unwrap_or(0);
 
     // Perform several writes
     for i in 0..5 {
@@ -455,10 +481,7 @@ async fn test_30_committed_index_advances() {
 
     // Committed / applied index must have advanced on the leader
     let metrics_after = cluster.metrics(leader);
-    let committed_after = metrics_after
-        .last_applied
-        .map(|l| l.index)
-        .unwrap_or(0);
+    let committed_after = metrics_after.last_applied.map(|l| l.index).unwrap_or(0);
     assert!(
         committed_after > committed_before,
         "committed index must advance: before={committed_before}, after={committed_after}"

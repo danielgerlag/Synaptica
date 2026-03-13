@@ -92,7 +92,12 @@ pub trait SynapticaBackend: Send + Sync {
     async fn get_schema(&self, graph: &str) -> anyhow::Result<SchemaInfo>;
     async fn list_labels(&self, graph: &str) -> anyhow::Result<Vec<LabelInfo>>;
     async fn list_indexes(&self, graph: &str) -> anyhow::Result<Vec<IndexInfo>>;
-    async fn create_index(&self, label: &str, property: &str, graph: &str) -> anyhow::Result<String>;
+    async fn create_index(
+        &self,
+        label: &str,
+        property: &str,
+        graph: &str,
+    ) -> anyhow::Result<String>;
     async fn drop_index(&self, label: &str, property: &str, graph: &str) -> anyhow::Result<String>;
     async fn health(&self) -> anyhow::Result<HealthInfo>;
     async fn cluster_status(&self) -> anyhow::Result<Option<ClusterInfo>>;

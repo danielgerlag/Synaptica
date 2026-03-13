@@ -94,7 +94,13 @@ impl TestGraph {
         storage.put_edge(&edge).unwrap();
     }
 
-    fn works_at(storage: &StorageEngine, gid: GraphId, person: &Node, _company_name: &str, since: i64) {
+    fn works_at(
+        storage: &StorageEngine,
+        gid: GraphId,
+        person: &Node,
+        _company_name: &str,
+        since: i64,
+    ) {
         // Find company node by scanning — keeps helpers simple.
         let companies = storage
             .scan_nodes_by_label(&gid, &synaptica_core::graph::Label::new("Company"))
@@ -122,7 +128,10 @@ fn execute_query(tg: &TestGraph, query: &str) -> ResultSet {
 
 /// Helper: collect all values from a named column in the result set.
 fn column_values(rs: &ResultSet, col: &str) -> Vec<Value> {
-    rs.records.iter().map(|r| r.get(col).cloned().unwrap_or(Value::Null)).collect()
+    rs.records
+        .iter()
+        .map(|r| r.get(col).cloned().unwrap_or(Value::Null))
+        .collect()
 }
 
 // ===========================================================================
@@ -205,7 +214,13 @@ mod parser_compliance {
         if let GqlStatement::Match(m) = &prog.statements[0] {
             assert!(m.where_clause.is_some());
             let cond = &*m.where_clause.as_ref().unwrap().condition;
-            assert!(matches!(cond, Expression::BinaryOp { op: BinaryOp::Gt, .. }));
+            assert!(matches!(
+                cond,
+                Expression::BinaryOp {
+                    op: BinaryOp::Gt,
+                    ..
+                }
+            ));
         } else {
             panic!("expected MATCH");
         }
@@ -225,7 +240,13 @@ mod parser_compliance {
             parse("MATCH (n:Person) WHERE n.name = 'Alice' OR n.name = 'Bob' RETURN n").unwrap();
         if let GqlStatement::Match(m) = &prog.statements[0] {
             let cond = &*m.where_clause.as_ref().unwrap().condition;
-            assert!(matches!(cond, Expression::BinaryOp { op: BinaryOp::Or, .. }));
+            assert!(matches!(
+                cond,
+                Expression::BinaryOp {
+                    op: BinaryOp::Or,
+                    ..
+                }
+            ));
         } else {
             panic!("expected MATCH");
         }
@@ -237,7 +258,10 @@ mod parser_compliance {
         if let GqlStatement::Return(r) = &prog.statements[1] {
             assert!(matches!(
                 &r.items[0].expression,
-                Expression::Aggregate { function: AggregateFunction::Count, .. }
+                Expression::Aggregate {
+                    function: AggregateFunction::Count,
+                    ..
+                }
             ));
         } else {
             panic!("expected RETURN");
@@ -250,8 +274,14 @@ mod parser_compliance {
         if let GqlStatement::Return(r) = &prog.statements[1] {
             assert_eq!(r.items.len(), 2);
             let lo = r.limit_offset.as_ref().expect("expected LIMIT/OFFSET");
-            assert!(matches!(&lo.limit, Some(Expression::Literal(Literal::Integer(5)))));
-            assert!(matches!(&lo.offset, Some(Expression::Literal(Literal::Integer(2)))));
+            assert!(matches!(
+                &lo.limit,
+                Some(Expression::Literal(Literal::Integer(5)))
+            ));
+            assert!(matches!(
+                &lo.offset,
+                Some(Expression::Literal(Literal::Integer(2)))
+            ));
         } else {
             panic!("expected RETURN");
         }
@@ -275,8 +305,7 @@ mod parser_compliance {
 
     #[test]
     fn parse_pattern_with_inline_properties() {
-        let prog =
-            parse("MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b) RETURN b.name").unwrap();
+        let prog = parse("MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b) RETURN b.name").unwrap();
         if let GqlStatement::Match(m) = &prog.statements[0] {
             let node = match &m.pattern.paths[0].elements[0] {
                 PatternElement::Node(n) => n,
@@ -389,7 +418,10 @@ mod planner_tests {
         let plan = planner.plan(&prog).unwrap();
 
         // Outermost should be Project wrapping a Scan.
-        if let LogicalPlan::Project { input, expressions, .. } = &plan {
+        if let LogicalPlan::Project {
+            input, expressions, ..
+        } = &plan
+        {
             assert_eq!(expressions.len(), 1);
             assert!(matches!(&**input, LogicalPlan::Scan { labels, .. } if labels == &["Person"]));
         } else {
@@ -405,9 +437,19 @@ mod planner_tests {
 
         // Outermost: Project → Filter → Scan
         if let LogicalPlan::Project { input, .. } = &plan {
-            if let LogicalPlan::Filter { input: inner, predicate } = &**input {
+            if let LogicalPlan::Filter {
+                input: inner,
+                predicate,
+            } = &**input
+            {
                 assert!(matches!(&**inner, LogicalPlan::Scan { labels, .. } if labels.is_empty()));
-                assert!(matches!(predicate, Expression::BinaryOp { op: BinaryOp::Gt, .. }));
+                assert!(matches!(
+                    predicate,
+                    Expression::BinaryOp {
+                        op: BinaryOp::Gt,
+                        ..
+                    }
+                ));
             } else {
                 panic!("expected Filter, got {:?}", input);
             }
@@ -432,9 +474,7 @@ mod planner_tests {
     #[test]
     fn plan_empty_program() {
         let planner = QueryPlanner::new();
-        let plan = planner
-            .plan(&GqlProgram { statements: vec![] })
-            .unwrap();
+        let plan = planner.plan(&GqlProgram { statements: vec![] }).unwrap();
         assert_eq!(plan, LogicalPlan::Empty);
     }
 }
@@ -575,9 +615,15 @@ mod e2e_insert_query {
     fn insert_node_then_query() {
         let tg = empty_graph();
         execute_query(&tg, "INSERT (:Person {name: 'Zara', age: 22})");
-        let rs = execute_query(&tg, "MATCH (n:Person) WHERE n.name = 'Zara' RETURN n.name, n.age");
+        let rs = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.name = 'Zara' RETURN n.name, n.age",
+        );
         assert_eq!(rs.len(), 1, "expected 1 row, got {}", rs.len());
-        assert_eq!(column_values(&rs, "n.name"), vec![Value::String("Zara".into())]);
+        assert_eq!(
+            column_values(&rs, "n.name"),
+            vec![Value::String("Zara".into())]
+        );
         assert_eq!(column_values(&rs, "n.age"), vec![Value::Integer(22)]);
     }
 
@@ -607,19 +653,22 @@ mod e2e_insert_query {
         execute_query(&tg, "INSERT (:Employee {name: 'Test'})");
         let rs = execute_query(&tg, "MATCH (n:Employee) RETURN n.name");
         assert_eq!(rs.len(), 1);
-        assert_eq!(column_values(&rs, "n.name"), vec![Value::String("Test".into())]);
+        assert_eq!(
+            column_values(&rs, "n.name"),
+            vec![Value::String("Test".into())]
+        );
     }
 
     #[test]
     fn insert_preserves_property_types() {
         let tg = empty_graph();
-        execute_query(
-            &tg,
-            "INSERT (:Thing {s: 'hello', i: 42, f: 3.14, b: true})",
-        );
+        execute_query(&tg, "INSERT (:Thing {s: 'hello', i: 42, f: 3.14, b: true})");
         let rs = execute_query(&tg, "MATCH (n:Thing) RETURN n.s, n.i, n.f, n.b");
         assert_eq!(rs.len(), 1);
-        assert_eq!(column_values(&rs, "n.s"), vec![Value::String("hello".into())]);
+        assert_eq!(
+            column_values(&rs, "n.s"),
+            vec![Value::String("hello".into())]
+        );
         assert_eq!(column_values(&rs, "n.i"), vec![Value::Integer(42)]);
         assert_eq!(column_values(&rs, "n.f"), vec![Value::Float(3.14)]);
         assert_eq!(column_values(&rs, "n.b"), vec![Value::Bool(true)]);
@@ -708,7 +757,10 @@ mod e2e_complex_queries {
             "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.name, n.age",
         );
         assert_eq!(rs.len(), 1);
-        assert_eq!(column_values(&rs, "n.name"), vec![Value::String("Alice".into())]);
+        assert_eq!(
+            column_values(&rs, "n.name"),
+            vec![Value::String("Alice".into())]
+        );
         assert_eq!(column_values(&rs, "n.age"), vec![Value::Integer(30)]);
     }
 
@@ -722,17 +774,17 @@ mod e2e_complex_queries {
         assert_eq!(rs.len(), 1);
         assert!(rs.columns.contains(&"n.name".to_string()));
         assert!(rs.columns.contains(&"n.age".to_string()));
-        assert_eq!(column_values(&rs, "n.name"), vec![Value::String("Alice".into())]);
+        assert_eq!(
+            column_values(&rs, "n.name"),
+            vec![Value::String("Alice".into())]
+        );
         assert_eq!(column_values(&rs, "n.age"), vec![Value::Integer(30)]);
     }
 
     #[test]
     fn query_empty_result() {
         let tg = TestGraph::new();
-        let rs = execute_query(
-            &tg,
-            "MATCH (n:Person) WHERE n.age > 100 RETURN n.name",
-        );
+        let rs = execute_query(&tg, "MATCH (n:Person) WHERE n.age > 100 RETURN n.name");
         assert_eq!(rs.len(), 0);
     }
 
@@ -755,10 +807,7 @@ mod e2e_sorting_pagination {
     #[test]
     fn order_by_integer_asc() {
         let tg = TestGraph::new();
-        let rs = execute_query(
-            &tg,
-            "MATCH (n:Person) RETURN n.name, n.age ORDER BY n.age",
-        );
+        let rs = execute_query(&tg, "MATCH (n:Person) RETURN n.name, n.age ORDER BY n.age");
         let ages = column_values(&rs, "n.age");
         assert_eq!(
             ages,
@@ -775,10 +824,7 @@ mod e2e_sorting_pagination {
     #[test]
     fn order_by_string_asc() {
         let tg = TestGraph::new();
-        let rs = execute_query(
-            &tg,
-            "MATCH (n:Person) RETURN n.name ORDER BY n.name",
-        );
+        let rs = execute_query(&tg, "MATCH (n:Person) RETURN n.name ORDER BY n.name");
         let names = column_values(&rs, "n.name");
         assert_eq!(
             names,
@@ -802,20 +848,19 @@ mod e2e_sorting_pagination {
     #[test]
     fn offset_only() {
         let tg = TestGraph::new();
-        let rs = execute_query(
-            &tg,
-            "MATCH (n:Person) RETURN n.name LIMIT 100 OFFSET 3",
+        let rs = execute_query(&tg, "MATCH (n:Person) RETURN n.name LIMIT 100 OFFSET 3");
+        assert_eq!(
+            rs.len(),
+            2,
+            "expected 2 rows (5 - 3 offset), got {}",
+            rs.len()
         );
-        assert_eq!(rs.len(), 2, "expected 2 rows (5 - 3 offset), got {}", rs.len());
     }
 
     #[test]
     fn offset_beyond_results() {
         let tg = TestGraph::new();
-        let rs = execute_query(
-            &tg,
-            "MATCH (n:Person) RETURN n.name LIMIT 10 OFFSET 100",
-        );
+        let rs = execute_query(&tg, "MATCH (n:Person) RETURN n.name LIMIT 10 OFFSET 100");
         assert_eq!(rs.len(), 0);
     }
 }
@@ -934,7 +979,10 @@ mod call_yield_tests {
     fn parse_call_with_multiple_yield() {
         let prog = parse("CALL db.schema() YIELD labels, relationshipTypes").unwrap();
         if let GqlStatement::Call(c) = &prog.statements[0] {
-            assert_eq!(c.yield_items, Some(vec!["labels".to_string(), "relationshipTypes".to_string()]));
+            assert_eq!(
+                c.yield_items,
+                Some(vec!["labels".to_string(), "relationshipTypes".to_string()])
+            );
         } else {
             panic!("expected CALL");
         }
@@ -1039,13 +1087,19 @@ mod temporal_tests {
     #[test]
     fn date_function() {
         let val = eval("RETURN DATE('2024-01-15')");
-        assert_eq!(val, Value::Date(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap()));
+        assert_eq!(
+            val,
+            Value::Date(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap())
+        );
     }
 
     #[test]
     fn time_function() {
         let val = eval("RETURN TIME('12:30:45')");
-        assert_eq!(val, Value::Time(NaiveTime::from_hms_opt(12, 30, 45).unwrap()));
+        assert_eq!(
+            val,
+            Value::Time(NaiveTime::from_hms_opt(12, 30, 45).unwrap())
+        );
     }
 
     #[test]
@@ -1057,16 +1111,20 @@ mod temporal_tests {
     #[test]
     fn datetime_function() {
         let val = eval("RETURN DATETIME('2024-06-15T10:30:00')");
-        let expected = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()
-            .and_hms_opt(10, 30, 0).unwrap();
+        let expected = NaiveDate::from_ymd_opt(2024, 6, 15)
+            .unwrap()
+            .and_hms_opt(10, 30, 0)
+            .unwrap();
         assert_eq!(val, Value::Timestamp(expected));
     }
 
     #[test]
     fn timestamp_function() {
         let val = eval("RETURN TIMESTAMP('2024-06-15 10:30:00')");
-        let expected = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()
-            .and_hms_opt(10, 30, 0).unwrap();
+        let expected = NaiveDate::from_ymd_opt(2024, 6, 15)
+            .unwrap()
+            .and_hms_opt(10, 30, 0)
+            .unwrap();
         assert_eq!(val, Value::Timestamp(expected));
     }
 
@@ -1103,7 +1161,10 @@ mod temporal_tests {
     #[test]
     fn lowercase_temporal_functions() {
         let val = eval("RETURN date('2024-01-15')");
-        assert_eq!(val, Value::Date(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap()));
+        assert_eq!(
+            val,
+            Value::Date(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap())
+        );
     }
 }
 
@@ -1240,22 +1301,19 @@ mod regression_tests {
     #[test]
     fn inline_property_filter_matches_only_target() {
         let tg = TestGraph::new();
-        let rs = execute_query(
-            &tg,
-            "MATCH (p:Person {name: 'Alice'}) RETURN p.name, p.age",
-        );
+        let rs = execute_query(&tg, "MATCH (p:Person {name: 'Alice'}) RETURN p.name, p.age");
         assert_eq!(rs.len(), 1);
-        assert_eq!(column_values(&rs, "p.name"), vec![Value::String("Alice".into())]);
+        assert_eq!(
+            column_values(&rs, "p.name"),
+            vec![Value::String("Alice".into())]
+        );
         assert_eq!(column_values(&rs, "p.age"), vec![Value::Integer(30)]);
     }
 
     #[test]
     fn inline_property_filter_no_match() {
         let tg = TestGraph::new();
-        let rs = execute_query(
-            &tg,
-            "MATCH (p:Person {name: 'NonExistent'}) RETURN p.name",
-        );
+        let rs = execute_query(&tg, "MATCH (p:Person {name: 'NonExistent'}) RETURN p.name");
         assert_eq!(rs.len(), 0);
     }
 
@@ -1291,15 +1349,15 @@ mod regression_tests {
         assert_eq!(rs.len(), 1);
 
         execute_query(&tg, "MATCH (a:Person {name: 'A'}) DETACH DELETE a");
-        let rs2 = execute_query(
-            &tg,
-            "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name",
-        );
+        let rs2 = execute_query(&tg, "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name");
         assert_eq!(rs2.len(), 0);
         // B still exists
         let rs3 = execute_query(&tg, "MATCH (p:Person) RETURN p.name");
         assert_eq!(rs3.len(), 1);
-        assert_eq!(column_values(&rs3, "p.name"), vec![Value::String("B".into())]);
+        assert_eq!(
+            column_values(&rs3, "p.name"),
+            vec![Value::String("B".into())]
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1320,7 +1378,10 @@ mod regression_tests {
     fn set_new_property() {
         let tg = empty_graph();
         execute_query(&tg, "INSERT (:Person {name: 'Zara'})");
-        execute_query(&tg, "MATCH (p:Person {name: 'Zara'}) SET p.hobby = 'painting'");
+        execute_query(
+            &tg,
+            "MATCH (p:Person {name: 'Zara'}) SET p.hobby = 'painting'",
+        );
         let rs = execute_query(&tg, "MATCH (p:Person {name: 'Zara'}) RETURN p.hobby");
         assert_eq!(rs.len(), 1);
         assert_eq!(
@@ -1388,9 +1449,18 @@ mod regression_tests {
             "MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN a.name, b.name, c.name",
         );
         assert_eq!(rs.len(), 1);
-        assert_eq!(column_values(&rs, "a.name"), vec![Value::String("Alice".into())]);
-        assert_eq!(column_values(&rs, "b.name"), vec![Value::String("Bob".into())]);
-        assert_eq!(column_values(&rs, "c.name"), vec![Value::String("Dave".into())]);
+        assert_eq!(
+            column_values(&rs, "a.name"),
+            vec![Value::String("Alice".into())]
+        );
+        assert_eq!(
+            column_values(&rs, "b.name"),
+            vec![Value::String("Bob".into())]
+        );
+        assert_eq!(
+            column_values(&rs, "c.name"),
+            vec![Value::String("Dave".into())]
+        );
     }
 
     #[test]
@@ -1401,8 +1471,14 @@ mod regression_tests {
             "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN a.name, c.name",
         );
         assert_eq!(rs.len(), 1);
-        assert_eq!(column_values(&rs, "a.name"), vec![Value::String("Alice".into())]);
-        assert_eq!(column_values(&rs, "c.name"), vec![Value::String("Dave".into())]);
+        assert_eq!(
+            column_values(&rs, "a.name"),
+            vec![Value::String("Alice".into())]
+        );
+        assert_eq!(
+            column_values(&rs, "c.name"),
+            vec![Value::String("Dave".into())]
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1501,14 +1577,8 @@ mod regression_tests {
         execute_query(&tg, "INSERT (:T {offset: 10, count: 5, type: 'special'})");
         let rs = execute_query(&tg, "MATCH (t:T) RETURN t.offset, t.count, t.type");
         assert_eq!(rs.len(), 1);
-        assert_eq!(
-            column_values(&rs, "t.offset"),
-            vec![Value::Integer(10)]
-        );
-        assert_eq!(
-            column_values(&rs, "t.count"),
-            vec![Value::Integer(5)]
-        );
+        assert_eq!(column_values(&rs, "t.offset"), vec![Value::Integer(10)]);
+        assert_eq!(column_values(&rs, "t.count"), vec![Value::Integer(5)]);
         assert_eq!(
             column_values(&rs, "t.type"),
             vec![Value::String("special".into())]
@@ -1572,10 +1642,7 @@ mod regression_tests {
     #[test]
     fn with_alias_carries_through() {
         let tg = TestGraph::new();
-        let rs = execute_query(
-            &tg,
-            "MATCH (p:Person) WITH p.name AS nm RETURN nm",
-        );
+        let rs = execute_query(&tg, "MATCH (p:Person) WITH p.name AS nm RETURN nm");
         assert_eq!(rs.len(), 5);
         assert!(rs.columns.contains(&"nm".to_string()));
         let nms = column_values(&rs, "nm");
@@ -1652,10 +1719,7 @@ mod regression_tests {
     #[test]
     fn non_existent_edge_label_returns_empty() {
         let tg = TestGraph::new();
-        let rs = execute_query(
-            &tg,
-            "MATCH (p:Person)-[:LIKES]->(x) RETURN p.name, x.name",
-        );
+        let rs = execute_query(&tg, "MATCH (p:Person)-[:LIKES]->(x) RETURN p.name, x.name");
         assert_eq!(rs.len(), 0);
     }
 
@@ -1672,8 +1736,14 @@ mod regression_tests {
             "MATCH (a:Person)-[:MENTORS]->(b:Person) RETURN a.name, b.name",
         );
         assert_eq!(rs.len(), 1);
-        assert_eq!(column_values(&rs, "a.name"), vec![Value::String("Alice".into())]);
-        assert_eq!(column_values(&rs, "b.name"), vec![Value::String("Alice".into())]);
+        assert_eq!(
+            column_values(&rs, "a.name"),
+            vec![Value::String("Alice".into())]
+        );
+        assert_eq!(
+            column_values(&rs, "b.name"),
+            vec![Value::String("Alice".into())]
+        );
     }
 
     #[test]
@@ -1762,7 +1832,10 @@ mod regression_tests {
     #[test]
     fn create_unique_index() {
         let tg = empty_graph();
-        let rs = execute_query(&tg, "CREATE UNIQUE INDEX idx_email FOR (n:User) ON (n.email)");
+        let rs = execute_query(
+            &tg,
+            "CREATE UNIQUE INDEX idx_email FOR (n:User) ON (n.email)",
+        );
         assert_eq!(rs.len(), 1);
         let result = column_values(&rs, "result");
         assert!(result[0].as_str().unwrap().contains("idx_email"));
@@ -1782,7 +1855,10 @@ mod regression_tests {
             "MATCH (n:Person) WHERE n.name = 'Bob' RETURN n.name, n.age",
         );
         assert_eq!(rs.len(), 1);
-        assert_eq!(column_values(&rs, "n.name"), vec![Value::String("Bob".into())]);
+        assert_eq!(
+            column_values(&rs, "n.name"),
+            vec![Value::String("Bob".into())]
+        );
         assert_eq!(column_values(&rs, "n.age"), vec![Value::Integer(35)]);
     }
 
@@ -1793,15 +1869,24 @@ mod regression_tests {
         execute_query(&tg, "INSERT (:Person {name: 'Alice', city: 'LA'})");
         execute_query(&tg, "INSERT (:Person {name: 'Bob', city: 'NYC'})");
 
-        execute_query(&tg, "CREATE INDEX idx_name_city FOR (n:Person) ON (n.name, n.city)");
+        execute_query(
+            &tg,
+            "CREATE INDEX idx_name_city FOR (n:Person) ON (n.name, n.city)",
+        );
 
         let rs = execute_query(
             &tg,
             "MATCH (n:Person) WHERE n.name = 'Alice' AND n.city = 'NYC' RETURN n.name, n.city",
         );
         assert_eq!(rs.len(), 1);
-        assert_eq!(column_values(&rs, "n.name"), vec![Value::String("Alice".into())]);
-        assert_eq!(column_values(&rs, "n.city"), vec![Value::String("NYC".into())]);
+        assert_eq!(
+            column_values(&rs, "n.name"),
+            vec![Value::String("Alice".into())]
+        );
+        assert_eq!(
+            column_values(&rs, "n.city"),
+            vec![Value::String("NYC".into())]
+        );
     }
 
     #[test]
@@ -1829,10 +1914,7 @@ mod regression_tests {
 
         execute_query(&tg, "MATCH (n:Person) WHERE n.name = 'Bob' DETACH DELETE n");
 
-        let rs = execute_query(
-            &tg,
-            "MATCH (n:Person) WHERE n.name = 'Bob' RETURN n.name",
-        );
+        let rs = execute_query(&tg, "MATCH (n:Person) WHERE n.name = 'Bob' RETURN n.name");
         assert_eq!(rs.len(), 0);
     }
 
@@ -1842,12 +1924,18 @@ mod regression_tests {
         execute_query(&tg, "INSERT (:Person {name: 'Alice', age: 30})");
         execute_query(&tg, "CREATE INDEX idx_name FOR (n:Person) ON (n.name)");
 
-        execute_query(&tg, "MATCH (n:Person) WHERE n.name = 'Alice' SET n.name = 'Alicia'");
+        execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.name = 'Alice' SET n.name = 'Alicia'",
+        );
 
         let rs1 = execute_query(&tg, "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n.name");
         assert_eq!(rs1.len(), 0);
 
-        let rs2 = execute_query(&tg, "MATCH (n:Person) WHERE n.name = 'Alicia' RETURN n.name");
+        let rs2 = execute_query(
+            &tg,
+            "MATCH (n:Person) WHERE n.name = 'Alicia' RETURN n.name",
+        );
         assert_eq!(rs2.len(), 1);
     }
 

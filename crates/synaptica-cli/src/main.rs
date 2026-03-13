@@ -245,40 +245,36 @@ async fn main() -> Result<()> {
                     ":help" => {
                         print_help();
                     }
-                    ":status" => {
-                        match client.health(HealthRequest {}).await {
-                            Ok(resp) => {
-                                let h = resp.into_inner();
-                                println!(
-                                    "Status: {} | Version: {} | Uptime: {}s",
-                                    h.status, h.version, h.uptime_seconds
-                                );
-                            }
-                            Err(e) => {
-                                eprintln!("Error: {}", e.message());
-                            }
+                    ":status" => match client.health(HealthRequest {}).await {
+                        Ok(resp) => {
+                            let h = resp.into_inner();
+                            println!(
+                                "Status: {} | Version: {} | Uptime: {}s",
+                                h.status, h.version, h.uptime_seconds
+                            );
                         }
-                    }
-                    ":graphs" => {
-                        match client.list_graphs(ListGraphsRequest {}).await {
-                            Ok(resp) => {
-                                let graphs = resp.into_inner().graphs;
-                                if graphs.is_empty() {
-                                    println!("No graphs found.");
-                                } else {
-                                    println!("{:<20} {}", "NAME", "ID");
-                                    println!("{}", "-".repeat(60));
-                                    for g in &graphs {
-                                        let marker = if g.name == cli.graph { " *" } else { "" };
-                                        println!("{:<20} {}{}", g.name, g.id, marker);
-                                    }
+                        Err(e) => {
+                            eprintln!("Error: {}", e.message());
+                        }
+                    },
+                    ":graphs" => match client.list_graphs(ListGraphsRequest {}).await {
+                        Ok(resp) => {
+                            let graphs = resp.into_inner().graphs;
+                            if graphs.is_empty() {
+                                println!("No graphs found.");
+                            } else {
+                                println!("{:<20} {}", "NAME", "ID");
+                                println!("{}", "-".repeat(60));
+                                for g in &graphs {
+                                    let marker = if g.name == cli.graph { " *" } else { "" };
+                                    println!("{:<20} {}{}", g.name, g.id, marker);
                                 }
                             }
-                            Err(e) => {
-                                eprintln!("Error: {}", e.message());
-                            }
                         }
-                    }
+                        Err(e) => {
+                            eprintln!("Error: {}", e.message());
+                        }
+                    },
                     query if query.starts_with(":backup") && !query.starts_with(":backups") => {
                         let label = query.strip_prefix(":backup").unwrap().trim();
                         let label = if label.is_empty() { "manual" } else { label };
@@ -295,30 +291,28 @@ async fn main() -> Result<()> {
                             Err(e) => eprintln!("Error: {}", e.message()),
                         }
                     }
-                    ":backups" => {
-                        match client.list_backups(ListBackupsRequest {}).await {
-                            Ok(resp) => {
-                                let backups = resp.into_inner().backups;
-                                if backups.is_empty() {
-                                    println!("No backups found.");
-                                } else {
+                    ":backups" => match client.list_backups(ListBackupsRequest {}).await {
+                        Ok(resp) => {
+                            let backups = resp.into_inner().backups;
+                            if backups.is_empty() {
+                                println!("No backups found.");
+                            } else {
+                                println!(
+                                    "{:<35} {:<15} {:<25} {}",
+                                    "NAME", "LABEL", "CREATED", "SIZE"
+                                );
+                                println!("{}", "-".repeat(85));
+                                for b in &backups {
+                                    let size = format_bytes(b.size_bytes);
                                     println!(
                                         "{:<35} {:<15} {:<25} {}",
-                                        "NAME", "LABEL", "CREATED", "SIZE"
+                                        b.name, b.label, b.created_at, size
                                     );
-                                    println!("{}", "-".repeat(85));
-                                    for b in &backups {
-                                        let size = format_bytes(b.size_bytes);
-                                        println!(
-                                            "{:<35} {:<15} {:<25} {}",
-                                            b.name, b.label, b.created_at, size
-                                        );
-                                    }
                                 }
                             }
-                            Err(e) => eprintln!("Error: {}", e.message()),
                         }
-                    }
+                        Err(e) => eprintln!("Error: {}", e.message()),
+                    },
                     query if query.starts_with(":delete-backup") => {
                         let name = query.strip_prefix(":delete-backup").unwrap().trim();
                         if name.is_empty() {
@@ -339,8 +333,12 @@ async fn main() -> Result<()> {
                         }
                     }
                     query if query.starts_with(":export") => {
-                        let args: Vec<&str> =
-                            query.strip_prefix(":export").unwrap().trim().split_whitespace().collect();
+                        let args: Vec<&str> = query
+                            .strip_prefix(":export")
+                            .unwrap()
+                            .trim()
+                            .split_whitespace()
+                            .collect();
                         if args.is_empty() {
                             eprintln!("Usage: :export <file> [graph]");
                         } else {
@@ -378,8 +376,12 @@ async fn main() -> Result<()> {
                         }
                     }
                     query if query.starts_with(":import") => {
-                        let args: Vec<&str> =
-                            query.strip_prefix(":import").unwrap().trim().split_whitespace().collect();
+                        let args: Vec<&str> = query
+                            .strip_prefix(":import")
+                            .unwrap()
+                            .trim()
+                            .split_whitespace()
+                            .collect();
                         if args.is_empty() {
                             eprintln!("Usage: :import <file> [graph]");
                         } else {
@@ -437,12 +439,8 @@ async fn main() -> Result<()> {
                                         OutputFormat::Table => {
                                             print_table(&resp.columns, &resp.rows)
                                         }
-                                        OutputFormat::Json => {
-                                            print_json(&resp.columns, &resp.rows)
-                                        }
-                                        OutputFormat::Csv => {
-                                            print_csv(&resp.columns, &resp.rows)
-                                        }
+                                        OutputFormat::Json => print_json(&resp.columns, &resp.rows),
+                                        OutputFormat::Csv => print_csv(&resp.columns, &resp.rows),
                                     }
                                     if let Some(stats) = &resp.stats {
                                         println!(

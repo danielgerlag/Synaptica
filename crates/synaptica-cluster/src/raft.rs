@@ -16,10 +16,7 @@ pub type SynapticaRaft = openraft::Raft<TypeConfig>;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum RaftRequest {
     /// Execute a GQL write query (INSERT, SET, DELETE, CREATE/DROP INDEX, etc.)
-    WriteQuery {
-        query: String,
-        graph_name: String,
-    },
+    WriteQuery { query: String, graph_name: String },
 }
 
 /// Response returned after a Raft entry is applied to the state machine.

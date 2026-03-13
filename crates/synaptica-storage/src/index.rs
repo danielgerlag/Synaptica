@@ -6,12 +6,12 @@
 
 use crate::cf::ColumnFamilies;
 use crate::engine::{StorageError, StorageResult};
+use parking_lot::Mutex;
 use rocksdb::{DBWithThreadMode, Direction, IteratorMode, MultiThreaded};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use parking_lot::Mutex;
 use synaptica_core::graph::{GraphId, Node, NodeId};
 use synaptica_core::types::Value;
 
@@ -115,13 +115,21 @@ pub struct IndexManager {
 
 impl IndexManager {
     pub fn new(db: Arc<DBWithThreadMode<MultiThreaded>>) -> Self {
-        Self { db, unique_lock: Mutex::new(()) }
+        Self {
+            db,
+            unique_lock: Mutex::new(()),
+        }
     }
 
     fn cf(&self) -> StorageResult<Arc<rocksdb::BoundColumnFamily<'_>>> {
         self.db
             .cf_handle(ColumnFamilies::PROP_INDEX)
-            .ok_or_else(|| StorageError::CfNotFound(ColumnFamilies::PROP_INDEX.to_string()))
+            .ok_or_else(|| {
+                StorageError::Internal(format!(
+                    "column family not found: {}",
+                    ColumnFamilies::PROP_INDEX
+                ))
+            })
     }
 
     // ---- key builders ----
@@ -199,8 +207,7 @@ impl IndexManager {
     pub fn create_index(&self, def: &IndexDefinition) -> StorageResult<()> {
         let cf = self.cf()?;
         let key = Self::meta_key(&def.graph_id, &def.name);
-        let value =
-            crate::encoding::serialize_value(def).map_err(StorageError::Serialization)?;
+        let value = crate::encoding::serialize_value(def).map_err(StorageError::Serialization)?;
         self.db.put_cf(&cf, &key, &value)?;
         Ok(())
     }
@@ -246,13 +253,11 @@ impl IndexManager {
                 if key.len() >= UUID_LEN {
                     let id_bytes: [u8; 16] = key[key.len() - UUID_LEN..]
                         .try_into()
-                        .map_err(|_| {
-                            StorageError::Deserialization("invalid entity id".into())
-                        })?;
+                        .map_err(|_| StorageError::Deserialization("invalid entity id".into()))?;
                     if NodeId::from_bytes(id_bytes) != node.id {
                         return Err(StorageError::UniqueViolation(format!(
                             "index '{}': duplicate value for node {}",
-                            def.name, node.id.0
+                            def.name, node.id
                         )));
                     }
                 }
@@ -313,10 +318,9 @@ impl IndexManager {
         let mut end_key = idx_prefix.clone();
         end_key.extend_from_slice(&Self::encode_values(&[end.clone()]));
 
-        let iter = self.db.iterator_cf(
-            &cf,
-            IteratorMode::From(&start_key, Direction::Forward),
-        );
+        let iter = self
+            .db
+            .iterator_cf(&cf, IteratorMode::From(&start_key, Direction::Forward));
 
         let mut out = Vec::new();
         for item in iter {

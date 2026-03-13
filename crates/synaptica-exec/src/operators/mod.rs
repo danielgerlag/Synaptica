@@ -49,11 +49,11 @@ impl Operator for ScanNodes {
         let mut rs = ResultSet::new(columns);
         for node in &nodes {
             let mut values: Vec<Value> = Vec::new();
-            values.push(Value::String(node.id.0.to_string()));
+            values.push(Value::String(node.id.to_string()));
             let label_list: Vec<Value> = node
                 .labels
                 .iter()
-                .map(|l| Value::String(l.0.clone()))
+                .map(|l| Value::String(l.to_string()))
                 .collect();
             values.push(Value::List(label_list));
             for key in &all_keys {
@@ -189,7 +189,7 @@ impl Operator for InsertNodeOp {
         ctx.storage.put_node(&node)?;
 
         let mut rs = ResultSet::new(vec!["__node_id".to_string()]);
-        rs.add_record(vec![Value::String(node.id.0.to_string())]);
+        rs.add_record(vec![Value::String(node.id.to_string())]);
         Ok(rs)
     }
 }

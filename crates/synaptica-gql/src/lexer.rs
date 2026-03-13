@@ -26,7 +26,11 @@ pub struct LexerError {
 
 impl fmt::Display for LexerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Lexer error at {}:{}: {}", self.line, self.column, self.message)
+        write!(
+            f,
+            "Lexer error at {}:{}: {}",
+            self.line, self.column, self.message
+        )
     }
 }
 
@@ -39,20 +43,84 @@ impl std::error::Error for LexerError {}
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     // Keywords
-    Match, Where, Return, Create, Insert, Delete, Set, Remove, Drop,
-    Graph, Type, Node, Edge,
-    True, False, Null,
-    Not, And, Or, Xor, Is, In, Like,
-    As, By, Order, Asc, Desc, Limit, Offset,
-    Group, Having, With, Let, For, Filter, Call, Yield,
-    Optional, Mandatory, Exists,
-    Case, When, Then, Else, End,
-    Union, Intersect, Except, All, Distinct,
-    Count, Sum, Avg, Min, Max, Collect,
-    Walk, Trail, Simple, Acyclic, Shortest, Path, Any,
-    Commit, Rollback, Begin, If, Detach, Nodetach,
-    Cost, Of, To, From,
-    Index, Unique, On, List,
+    Match,
+    Where,
+    Return,
+    Create,
+    Insert,
+    Delete,
+    Set,
+    Remove,
+    Drop,
+    Graph,
+    Type,
+    Node,
+    Edge,
+    True,
+    False,
+    Null,
+    Not,
+    And,
+    Or,
+    Xor,
+    Is,
+    In,
+    Like,
+    As,
+    By,
+    Order,
+    Asc,
+    Desc,
+    Limit,
+    Offset,
+    Group,
+    Having,
+    With,
+    Let,
+    For,
+    Filter,
+    Call,
+    Yield,
+    Optional,
+    Mandatory,
+    Exists,
+    Case,
+    When,
+    Then,
+    Else,
+    End,
+    Union,
+    Intersect,
+    Except,
+    All,
+    Distinct,
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+    Collect,
+    Walk,
+    Trail,
+    Simple,
+    Acyclic,
+    Shortest,
+    Path,
+    Any,
+    Commit,
+    Rollback,
+    Begin,
+    If,
+    Detach,
+    Nodetach,
+    Cost,
+    Of,
+    To,
+    From,
+    Index,
+    Unique,
+    On,
+    List,
 
     // Literals
     IntegerLit(i64),
@@ -66,14 +134,35 @@ pub enum Token {
     Parameter(String),
 
     // Operators
-    Plus, Minus, Star, Slash, Percent,
-    Eq, Neq, Lt, Gt, Le, Ge,
-    DoublePipe, Dot, DoubleDot,
-    Arrow, LeftArrow, Tilde,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    DoublePipe,
+    Dot,
+    DoubleDot,
+    Arrow,
+    LeftArrow,
+    Tilde,
 
     // Delimiters
-    LParen, RParen, LBracket, RBracket, LBrace, RBrace,
-    Comma, Colon, Semicolon, At,
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    LBrace,
+    RBrace,
+    Comma,
+    Colon,
+    Semicolon,
+    At,
 
     // Special
     Eof,
@@ -208,7 +297,10 @@ impl Lexer {
         let span = self.current_span();
 
         if self.is_eof() {
-            return Ok(SpannedToken { token: Token::Eof, span });
+            return Ok(SpannedToken {
+                token: Token::Eof,
+                span,
+            });
         }
 
         let ch = self.peek();
@@ -281,11 +373,19 @@ impl Lexer {
     }
 
     fn current_span(&self) -> Span {
-        Span { line: self.line, column: self.column, offset: self.pos }
+        Span {
+            line: self.line,
+            column: self.column,
+            offset: self.pos,
+        }
     }
 
     fn error(&self, msg: impl Into<String>) -> LexerError {
-        LexerError { message: msg.into(), line: self.line, column: self.column }
+        LexerError {
+            message: msg.into(),
+            line: self.line,
+            column: self.column,
+        }
     }
 
     fn skip_whitespace(&mut self) {
@@ -303,7 +403,10 @@ impl Lexer {
         while !self.is_eof() && self.peek() != '\n' {
             text.push(self.advance());
         }
-        Ok(SpannedToken { token: Token::Comment(text), span })
+        Ok(SpannedToken {
+            token: Token::Comment(text),
+            span,
+        })
     }
 
     fn lex_multi_line_comment(&mut self, span: Span) -> Result<SpannedToken, LexerError> {
@@ -325,7 +428,10 @@ impl Lexer {
             }
             text.push(self.advance());
         }
-        Ok(SpannedToken { token: Token::Comment(text), span })
+        Ok(SpannedToken {
+            token: Token::Comment(text),
+            span,
+        })
     }
 
     fn lex_string(&mut self, span: Span) -> Result<SpannedToken, LexerError> {
@@ -352,7 +458,10 @@ impl Lexer {
                 s.push(ch);
             }
         }
-        Ok(SpannedToken { token: Token::StringLit(s), span })
+        Ok(SpannedToken {
+            token: Token::StringLit(s),
+            span,
+        })
     }
 
     fn lex_number(&mut self, span: Span) -> Result<SpannedToken, LexerError> {
@@ -363,7 +472,10 @@ impl Lexer {
         }
         let mut is_float = false;
         // fractional part
-        if !self.is_eof() && self.peek() == '.' && self.peek_at(1).map_or(false, |c| c.is_ascii_digit()) {
+        if !self.is_eof()
+            && self.peek() == '.'
+            && self.peek_at(1).map_or(false, |c| c.is_ascii_digit())
+        {
             is_float = true;
             self.advance(); // .
             while !self.is_eof() && self.peek().is_ascii_digit() {
@@ -386,11 +498,21 @@ impl Lexer {
         }
         let text: String = self.input[start..self.pos].iter().collect();
         if is_float {
-            let val: f64 = text.parse().map_err(|_| self.error(format!("invalid float literal: {text}")))?;
-            Ok(SpannedToken { token: Token::FloatLit(val), span })
+            let val: f64 = text
+                .parse()
+                .map_err(|_| self.error(format!("invalid float literal: {text}")))?;
+            Ok(SpannedToken {
+                token: Token::FloatLit(val),
+                span,
+            })
         } else {
-            let val: i64 = text.parse().map_err(|_| self.error(format!("invalid integer literal: {text}")))?;
-            Ok(SpannedToken { token: Token::IntegerLit(val), span })
+            let val: i64 = text
+                .parse()
+                .map_err(|_| self.error(format!("invalid integer literal: {text}")))?;
+            Ok(SpannedToken {
+                token: Token::IntegerLit(val),
+                span,
+            })
         }
     }
 
@@ -414,7 +536,10 @@ impl Lexer {
             self.advance();
         }
         let name: String = self.input[start..self.pos].iter().collect();
-        Ok(SpannedToken { token: Token::Parameter(name), span })
+        Ok(SpannedToken {
+            token: Token::Parameter(name),
+            span,
+        })
     }
 
     fn lex_operator_or_delimiter(&mut self, span: Span) -> Result<SpannedToken, LexerError> {
@@ -538,24 +663,27 @@ mod tests {
     #[test]
     fn test_simple_match_return() {
         let toks = tokens_no_eof("MATCH (n:Person) WHERE n.age > 30 RETURN n.name");
-        assert_eq!(toks, vec![
-            Token::Match,
-            Token::LParen,
-            Token::Ident("n".into()),
-            Token::Colon,
-            Token::Ident("Person".into()),
-            Token::RParen,
-            Token::Where,
-            Token::Ident("n".into()),
-            Token::Dot,
-            Token::Ident("age".into()),
-            Token::Gt,
-            Token::IntegerLit(30),
-            Token::Return,
-            Token::Ident("n".into()),
-            Token::Dot,
-            Token::Ident("name".into()),
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                Token::Match,
+                Token::LParen,
+                Token::Ident("n".into()),
+                Token::Colon,
+                Token::Ident("Person".into()),
+                Token::RParen,
+                Token::Where,
+                Token::Ident("n".into()),
+                Token::Dot,
+                Token::Ident("age".into()),
+                Token::Gt,
+                Token::IntegerLit(30),
+                Token::Return,
+                Token::Ident("n".into()),
+                Token::Dot,
+                Token::Ident("name".into()),
+            ]
+        );
     }
 
     #[test]
@@ -566,11 +694,14 @@ mod tests {
 
     #[test]
     fn test_integer_literals() {
-        assert_eq!(tokens_no_eof("0 42 1000"), vec![
-            Token::IntegerLit(0),
-            Token::IntegerLit(42),
-            Token::IntegerLit(1000),
-        ]);
+        assert_eq!(
+            tokens_no_eof("0 42 1000"),
+            vec![
+                Token::IntegerLit(0),
+                Token::IntegerLit(42),
+                Token::IntegerLit(1000),
+            ]
+        );
     }
 
     #[test]
@@ -590,71 +721,125 @@ mod tests {
 
     #[test]
     fn test_string_literals() {
-        assert_eq!(tokens_no_eof("'hello'"), vec![Token::StringLit("hello".into())]);
+        assert_eq!(
+            tokens_no_eof("'hello'"),
+            vec![Token::StringLit("hello".into())]
+        );
         // '' escape for literal quote
-        assert_eq!(tokens_no_eof("'it''s'"), vec![Token::StringLit("it's".into())]);
+        assert_eq!(
+            tokens_no_eof("'it''s'"),
+            vec![Token::StringLit("it's".into())]
+        );
         assert_eq!(tokens_no_eof("''"), vec![Token::StringLit(String::new())]);
     }
 
     #[test]
     fn test_all_operators() {
         let toks = tokens_no_eof("+ - * / % = != <> < > <= >= || . .. -> <- ~");
-        assert_eq!(toks, vec![
-            Token::Plus, Token::Minus, Token::Star, Token::Slash, Token::Percent,
-            Token::Eq, Token::Neq, Token::Neq,
-            Token::Lt, Token::Gt, Token::Le, Token::Ge,
-            Token::DoublePipe, Token::Dot, Token::DoubleDot,
-            Token::Arrow, Token::LeftArrow, Token::Tilde,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                Token::Plus,
+                Token::Minus,
+                Token::Star,
+                Token::Slash,
+                Token::Percent,
+                Token::Eq,
+                Token::Neq,
+                Token::Neq,
+                Token::Lt,
+                Token::Gt,
+                Token::Le,
+                Token::Ge,
+                Token::DoublePipe,
+                Token::Dot,
+                Token::DoubleDot,
+                Token::Arrow,
+                Token::LeftArrow,
+                Token::Tilde,
+            ]
+        );
     }
 
     #[test]
     fn test_delimiters() {
         let toks = tokens_no_eof("( ) [ ] { } , : ; @");
-        assert_eq!(toks, vec![
-            Token::LParen, Token::RParen,
-            Token::LBracket, Token::RBracket,
-            Token::LBrace, Token::RBrace,
-            Token::Comma, Token::Colon, Token::Semicolon, Token::At,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                Token::LParen,
+                Token::RParen,
+                Token::LBracket,
+                Token::RBracket,
+                Token::LBrace,
+                Token::RBrace,
+                Token::Comma,
+                Token::Colon,
+                Token::Semicolon,
+                Token::At,
+            ]
+        );
     }
 
     #[test]
     fn test_single_line_comment() {
         let toks = tokens_no_eof("MATCH -- this is a comment\nRETURN");
-        assert_eq!(toks, vec![
-            Token::Match,
-            Token::Comment(" this is a comment".into()),
-            Token::Return,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                Token::Match,
+                Token::Comment(" this is a comment".into()),
+                Token::Return,
+            ]
+        );
     }
 
     #[test]
     fn test_multi_line_comment() {
         let toks = tokens_no_eof("MATCH /* a\nmultiline\ncomment */ RETURN");
-        assert_eq!(toks, vec![
-            Token::Match,
-            Token::Comment(" a\nmultiline\ncomment ".into()),
-            Token::Return,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                Token::Match,
+                Token::Comment(" a\nmultiline\ncomment ".into()),
+                Token::Return,
+            ]
+        );
     }
 
     #[test]
     fn test_parameter() {
         let toks = tokens_no_eof("$name $age_1");
-        assert_eq!(toks, vec![
-            Token::Parameter("name".into()),
-            Token::Parameter("age_1".into()),
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                Token::Parameter("name".into()),
+                Token::Parameter("age_1".into()),
+            ]
+        );
     }
 
     #[test]
     fn test_span_tracking() {
         let spanned = Lexer::new("MATCH\n  (n)").tokenize().unwrap();
         // MATCH at line 1 col 1
-        assert_eq!(spanned[0].span, Span { line: 1, column: 1, offset: 0 });
+        assert_eq!(
+            spanned[0].span,
+            Span {
+                line: 1,
+                column: 1,
+                offset: 0
+            }
+        );
         // ( at line 2 col 3
-        assert_eq!(spanned[1].span, Span { line: 2, column: 3, offset: 8 });
+        assert_eq!(
+            spanned[1].span,
+            Span {
+                line: 2,
+                column: 3,
+                offset: 8
+            }
+        );
     }
 
     #[test]

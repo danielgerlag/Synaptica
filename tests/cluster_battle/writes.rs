@@ -13,13 +13,21 @@ use synaptica_core::types::Value;
 async fn insert_single_node_replicates_to_all() {
     let cluster = TestCluster::new(3).await;
 
-    let resp = cluster.write("INSERT (:Person {name: 'Alice'})").await.unwrap();
+    let resp = cluster
+        .write("INSERT (:Person {name: 'Alice'})")
+        .await
+        .unwrap();
     assert!(resp.success, "INSERT should succeed: {:?}", resp.error);
 
     cluster.wait_for_convergence(5000).await;
 
     for id in cluster.nodes.keys() {
-        assert_eq!(cluster.count_nodes_on(*id), 1, "node {} should have 1 graph node", id);
+        assert_eq!(
+            cluster.count_nodes_on(*id),
+            1,
+            "node {} should have 1 graph node",
+            id
+        );
     }
 
     cluster.shutdown().await;
@@ -59,10 +67,18 @@ async fn insert_node_with_properties_replicates_values() {
 async fn insert_edge_replicates_to_all() {
     let cluster = TestCluster::new(3).await;
 
-    cluster.write("INSERT (:Person {name: 'Alice'})").await.unwrap();
-    cluster.write("INSERT (:Person {name: 'Bob'})").await.unwrap();
     cluster
-        .write("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) INSERT (a)-[:KNOWS]->(b)")
+        .write("INSERT (:Person {name: 'Alice'})")
+        .await
+        .unwrap();
+    cluster
+        .write("INSERT (:Person {name: 'Bob'})")
+        .await
+        .unwrap();
+    cluster
+        .write(
+            "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) INSERT (a)-[:KNOWS]->(b)",
+        )
         .await
         .unwrap();
 
@@ -103,7 +119,10 @@ async fn set_property_replicates() {
 
     for id in cluster.nodes.keys() {
         let rs = cluster
-            .read_on(*id, "MATCH (n:Person) WHERE n.name = 'Charlie' RETURN n.age")
+            .read_on(
+                *id,
+                "MATCH (n:Person) WHERE n.name = 'Charlie' RETURN n.age",
+            )
             .unwrap();
         assert_eq!(rs.records.len(), 1, "node {} should have 1 record", id);
         assert_eq!(
@@ -132,7 +151,12 @@ async fn delete_node_replicates_removal() {
     cluster.wait_for_convergence_count(0, 5000).await;
 
     for id in cluster.nodes.keys() {
-        assert_eq!(cluster.count_nodes_on(*id), 0, "node {} should have 0 nodes after DELETE", id);
+        assert_eq!(
+            cluster.count_nodes_on(*id),
+            0,
+            "node {} should have 0 nodes after DELETE",
+            id
+        );
     }
 
     cluster.shutdown().await;
@@ -187,7 +211,11 @@ async fn create_graph_replicates() {
         .write("INSERT (:Employee:Person {name: 'Eve', dept: 'Engineering'})")
         .await
         .unwrap();
-    assert!(resp.success, "multi-label INSERT should succeed: {:?}", resp.error);
+    assert!(
+        resp.success,
+        "multi-label INSERT should succeed: {:?}",
+        resp.error
+    );
 
     cluster.wait_for_convergence(5000).await;
 
@@ -222,7 +250,12 @@ async fn drop_graph_replicates() {
     cluster.wait_for_convergence_count(0, 5000).await;
 
     for id in cluster.nodes.keys() {
-        assert_eq!(cluster.count_nodes_on(*id), 0, "node {} should have 0 nodes after cascading DELETE", id);
+        assert_eq!(
+            cluster.count_nodes_on(*id),
+            0,
+            "node {} should have 0 nodes after cascading DELETE",
+            id
+        );
     }
 
     cluster.shutdown().await;
@@ -239,16 +272,17 @@ async fn create_index_replicates() {
         .write("CREATE INDEX idx_name FOR (n:Person) ON (n.name)")
         .await
         .unwrap();
-    assert!(resp.success, "CREATE INDEX should succeed: {:?}", resp.error);
+    assert!(
+        resp.success,
+        "CREATE INDEX should succeed: {:?}",
+        resp.error
+    );
 
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     let graph_id = synaptica_core::graph::GraphId::from_name(&cluster.graph_name);
     for (id, node) in &cluster.nodes {
-        let mgr = synaptica_storage::index::IndexManager::new(
-            std::sync::Arc::clone(node.storage.raw_db()),
-        );
-        let indexes = mgr.list_indexes(&graph_id).unwrap();
+        let indexes = node.storage.list_indexes(&graph_id).unwrap();
         assert!(
             indexes.iter().any(|idx| idx.name == "idx_name"),
             "node {} should have index idx_name",
@@ -279,10 +313,7 @@ async fn drop_index_replicates() {
 
     let graph_id = synaptica_core::graph::GraphId::from_name(&cluster.graph_name);
     for (id, node) in &cluster.nodes {
-        let mgr = synaptica_storage::index::IndexManager::new(
-            std::sync::Arc::clone(node.storage.raw_db()),
-        );
-        let indexes = mgr.list_indexes(&graph_id).unwrap();
+        let indexes = node.storage.list_indexes(&graph_id).unwrap();
         assert!(
             !indexes.iter().any(|idx| idx.name == "idx_drop"),
             "node {} should NOT have index idx_drop after DROP",
@@ -409,7 +440,12 @@ async fn syntax_error_returns_error_no_replication() {
 
     // No data should have been replicated
     for id in cluster.nodes.keys() {
-        assert_eq!(cluster.count_nodes_on(*id), 0, "node {} should have 0 nodes", id);
+        assert_eq!(
+            cluster.count_nodes_on(*id),
+            0,
+            "node {} should have 0 nodes",
+            id
+        );
     }
 
     cluster.shutdown().await;
@@ -460,7 +496,12 @@ async fn batch_insert_500_nodes_replicates() {
     cluster.wait_for_convergence_count(500, 30_000).await;
 
     for id in cluster.nodes.keys() {
-        assert_eq!(cluster.count_nodes_on(*id), 500, "node {} should have 500 nodes", id);
+        assert_eq!(
+            cluster.count_nodes_on(*id),
+            500,
+            "node {} should have 500 nodes",
+            id
+        );
     }
 
     cluster.shutdown().await;
@@ -520,7 +561,12 @@ async fn delete_after_insert_empty_state() {
     cluster.wait_for_convergence_count(0, 5000).await;
 
     for id in cluster.nodes.keys() {
-        assert_eq!(cluster.count_nodes_on(*id), 0, "node {} should be empty", id);
+        assert_eq!(
+            cluster.count_nodes_on(*id),
+            0,
+            "node {} should be empty",
+            id
+        );
     }
 
     cluster.shutdown().await;
@@ -619,7 +665,11 @@ async fn write_classification_identifies_mutations() {
     for q in &write_queries {
         let result = cluster.write(q).await;
         match result {
-            Ok(resp) => assert!(resp.success, "query '{}' should succeed: {:?}", q, resp.error),
+            Ok(resp) => assert!(
+                resp.success,
+                "query '{}' should succeed: {:?}",
+                q, resp.error
+            ),
             Err(e) => panic!("query '{}' should not error: {}", q, e),
         }
     }
@@ -634,18 +684,11 @@ async fn write_classification_identifies_mutations() {
 async fn read_only_query_succeeds_on_follower() {
     let cluster = TestCluster::new(3).await;
 
-    cluster
-        .write("INSERT (:Rd {k: 'hello'})")
-        .await
-        .unwrap();
+    cluster.write("INSERT (:Rd {k: 'hello'})").await.unwrap();
     cluster.wait_for_convergence(5000).await;
 
     let leader = cluster.get_leader().unwrap();
-    let follower = *cluster
-        .nodes
-        .keys()
-        .find(|id| **id != leader)
-        .unwrap();
+    let follower = *cluster.nodes.keys().find(|id| **id != leader).unwrap();
 
     // Local read on follower should work (no Raft needed)
     let rs = cluster
@@ -668,16 +711,10 @@ async fn mixed_read_write_classified_as_write() {
     let cluster = TestCluster::new(3).await;
 
     let leader = cluster.get_leader().unwrap();
-    let follower = *cluster
-        .nodes
-        .keys()
-        .find(|id| **id != leader)
-        .unwrap();
+    let follower = *cluster.nodes.keys().find(|id| **id != leader).unwrap();
 
     // A write query on a follower should be rejected via Raft
-    let result = cluster
-        .write_on(follower, "INSERT (:Mix {x: 1})")
-        .await;
+    let result = cluster.write_on(follower, "INSERT (:Mix {x: 1})").await;
 
     assert!(result.is_err(), "INSERT on follower must be rejected");
     let err = result.unwrap_err().to_lowercase();
@@ -713,16 +750,18 @@ async fn create_graph_type_or_graph_replicates() {
 
     let graph_id = synaptica_core::graph::GraphId::from_name(&cluster.graph_name);
     for (id, node) in &cluster.nodes {
-        let mgr = synaptica_storage::index::IndexManager::new(
-            std::sync::Arc::clone(node.storage.raw_db()),
-        );
-        let indexes = mgr.list_indexes(&graph_id).unwrap();
+        let indexes = node.storage.list_indexes(&graph_id).unwrap();
         assert!(
             indexes.iter().any(|idx| idx.name == "idx_schema"),
             "node {} should have idx_schema",
             id
         );
-        assert_eq!(cluster.count_nodes_on(*id), 1, "node {} should have 1 Schema node", id);
+        assert_eq!(
+            cluster.count_nodes_on(*id),
+            1,
+            "node {} should have 1 Schema node",
+            id
+        );
     }
 
     cluster.shutdown().await;
@@ -740,10 +779,7 @@ async fn write_latency_under_500ms() {
     cluster.wait_for_convergence(5000).await;
 
     let start = std::time::Instant::now();
-    let resp = cluster
-        .write("INSERT (:Latency {t: 1})")
-        .await
-        .unwrap();
+    let resp = cluster.write("INSERT (:Latency {t: 1})").await.unwrap();
     let elapsed = start.elapsed();
 
     assert!(resp.success, "INSERT should succeed: {:?}", resp.error);

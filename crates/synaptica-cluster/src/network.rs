@@ -1,8 +1,8 @@
 use openraft::error::{InstallSnapshotError, NetworkError, RPCError, Unreachable};
 use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
 use openraft::raft::{
-    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
-    InstallSnapshotResponse, VoteRequest, VoteResponse,
+    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
+    VoteRequest, VoteResponse,
 };
 use openraft::BasicNode;
 use tonic::transport::Channel;
@@ -59,7 +59,8 @@ impl RaftNetwork<TypeConfig> for GrpcNetworkConnection {
         req: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<NodeId>, RaftRPCError> {
-        let data = bincode::serialize(&req).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
+        let data =
+            bincode::serialize(&req).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
 
         let mut client = self
             .connect()
@@ -71,9 +72,8 @@ impl RaftNetwork<TypeConfig> for GrpcNetworkConnection {
             .await
             .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
 
-        let response: AppendEntriesResponse<NodeId> =
-            bincode::deserialize(&resp.into_inner().data)
-                .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
+        let response: AppendEntriesResponse<NodeId> = bincode::deserialize(&resp.into_inner().data)
+            .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
 
         Ok(response)
     }
@@ -83,7 +83,8 @@ impl RaftNetwork<TypeConfig> for GrpcNetworkConnection {
         req: InstallSnapshotRequest<TypeConfig>,
         _option: RPCOption,
     ) -> Result<InstallSnapshotResponse<NodeId>, RaftRPCError<InstallSnapshotError>> {
-        let data = bincode::serialize(&req).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
+        let data =
+            bincode::serialize(&req).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
 
         let mut client = self
             .connect()
@@ -107,7 +108,8 @@ impl RaftNetwork<TypeConfig> for GrpcNetworkConnection {
         req: VoteRequest<NodeId>,
         _option: RPCOption,
     ) -> Result<VoteResponse<NodeId>, RaftRPCError> {
-        let data = bincode::serialize(&req).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
+        let data =
+            bincode::serialize(&req).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
 
         let mut client = self
             .connect()

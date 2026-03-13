@@ -84,9 +84,7 @@ mod tests {
     #[test]
     fn test_apply_insert() {
         let dir = tempfile::tempdir().unwrap();
-        let storage = Arc::new(
-            StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap(),
-        );
+        let storage = Arc::new(StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap());
         let graph_id = GraphId::from_name("test");
         let meta = synaptica_core::graph::GraphMeta {
             id: graph_id,
@@ -107,9 +105,7 @@ mod tests {
     #[test]
     fn test_apply_invalid_query() {
         let dir = tempfile::tempdir().unwrap();
-        let storage = Arc::new(
-            StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap(),
-        );
+        let storage = Arc::new(StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap());
 
         let applier = StateMachineApplier::new(storage);
         let req = RaftRequest::WriteQuery {

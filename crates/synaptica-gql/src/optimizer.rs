@@ -35,11 +35,7 @@ impl OptimizerRule for FilterPushdown {
     fn apply(&self, plan: &LogicalPlan) -> Option<LogicalPlan> {
         // Stub: look for Filter-over-Project and swap them so the filter is
         // applied before the projection.
-        if let LogicalPlan::Filter {
-            input,
-            predicate,
-        } = plan
-        {
+        if let LogicalPlan::Filter { input, predicate } = plan {
             if let LogicalPlan::Project {
                 input: proj_input,
                 expressions,

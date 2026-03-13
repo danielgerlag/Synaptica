@@ -1,5 +1,5 @@
-use synaptica_storage::mvcc::MvccStore;
 use std::sync::Arc;
+use synaptica_storage::mvcc::MvccStore;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

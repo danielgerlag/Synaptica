@@ -10,7 +10,6 @@ synaptica-tx = { workspace = true }
 synaptica-gql = { workspace = true }
 synaptica-exec = { workspace = true }
 openraft = { workspace = true }
-rocksdb = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }

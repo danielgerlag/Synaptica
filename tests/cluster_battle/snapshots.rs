@@ -22,8 +22,7 @@ fn standalone_store(
     graph_name: &str,
 ) -> (Arc<RocksLogStore>, Arc<StorageEngine>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let storage =
-        Arc::new(StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap());
+    let storage = Arc::new(StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap());
     let graph_id = GraphId::from_name(graph_name);
     let meta = GraphMeta {
         id: graph_id,
@@ -32,10 +31,7 @@ fn standalone_store(
     };
     storage.put_graph_meta(&meta).unwrap();
     let applier = Arc::new(StateMachineApplier::new(storage.clone()));
-    let store = Arc::new(RocksLogStore::with_applier(
-        storage.raw_db().clone(),
-        applier,
-    ));
+    let store = Arc::new(RocksLogStore::with_applier(storage.clone(), applier));
     (store, storage, dir)
 }
 
@@ -54,8 +50,9 @@ fn blank_entry(term: u64, index: u64) -> Entry<TypeConfig> {
 async fn snapshot_captures_current_state() {
     let (mut store, _storage, _dir) = standalone_store("test");
 
-    let snapshot =
-        RaftSnapshotBuilder::<TypeConfig>::build_snapshot(&mut store).await.unwrap();
+    let snapshot = RaftSnapshotBuilder::<TypeConfig>::build_snapshot(&mut store)
+        .await
+        .unwrap();
 
     assert!(
         snapshot.meta.snapshot_id.starts_with("snapshot-"),
@@ -83,9 +80,7 @@ async fn snapshot_installs_on_new_joiner() {
     cluster.add_learner(4).await;
     cluster.wait_for_convergence_count(5, 10_000).await;
 
-    let rs = cluster
-        .read_on(4, "MATCH (n:Widget) RETURN n.idx")
-        .unwrap();
+    let rs = cluster.read_on(4, "MATCH (n:Widget) RETURN n.idx").unwrap();
     assert_eq!(rs.records.len(), 5, "learner must have all 5 widgets");
 
     cluster.shutdown().await;
@@ -127,8 +122,9 @@ async fn snapshot_metadata_persisted_correctly() {
     let (mut store, _storage, _dir) = standalone_store("test");
 
     // Build a snapshot on a fresh store
-    let snap =
-        RaftSnapshotBuilder::<TypeConfig>::build_snapshot(&mut store).await.unwrap();
+    let snap = RaftSnapshotBuilder::<TypeConfig>::build_snapshot(&mut store)
+        .await
+        .unwrap();
 
     // No entries applied yet
     assert!(
@@ -165,8 +161,9 @@ async fn snapshot_triggers_log_purge() {
     store.append_to_log(entries).await.unwrap();
 
     // Build a snapshot (records current state)
-    let _snap =
-        RaftSnapshotBuilder::<TypeConfig>::build_snapshot(&mut store).await.unwrap();
+    let _snap = RaftSnapshotBuilder::<TypeConfig>::build_snapshot(&mut store)
+        .await
+        .unwrap();
 
     // Purge log entries up to index 7
     let purge_id = LogId::new(openraft::CommittedLeaderId::new(1, 0), 7);
@@ -250,8 +247,9 @@ async fn snapshot_with_multiple_graphs() {
     assert!(gb.is_ok(), "graph_b meta must exist");
 
     // Build snapshot — should succeed with multiple graphs
-    let snap =
-        RaftSnapshotBuilder::<TypeConfig>::build_snapshot(&mut store).await.unwrap();
+    let snap = RaftSnapshotBuilder::<TypeConfig>::build_snapshot(&mut store)
+        .await
+        .unwrap();
     assert!(
         snap.meta.snapshot_id.starts_with("snapshot-"),
         "snapshot must be built successfully with multiple graphs"
@@ -269,8 +267,6 @@ async fn snapshot_with_multiple_graphs() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn snapshot_with_indexes_preserves_definitions() {
-    use synaptica_storage::index::IndexManager;
-
     let mut cluster = TestCluster::new(3).await;
 
     cluster
@@ -289,9 +285,8 @@ async fn snapshot_with_indexes_preserves_definitions() {
 
     // Verify index on the learner
     let learner_node = cluster.nodes.get(&4).unwrap();
-    let idx_mgr = IndexManager::new(learner_node.storage.raw_db().clone());
     let graph_id = GraphId::from_name("test");
-    let indexes = idx_mgr.list_indexes(&graph_id).unwrap();
+    let indexes = learner_node.storage.list_indexes(&graph_id).unwrap();
     assert!(
         indexes.iter().any(|idx| idx.name == "idx_name"),
         "index definition must be present on learner, found: {:?}",
@@ -313,8 +308,9 @@ async fn two_sequential_snapshots_are_consistent() {
     store.append_to_log(entries).await.unwrap();
 
     // First snapshot
-    let snap1 =
-        RaftSnapshotBuilder::<TypeConfig>::build_snapshot(&mut store).await.unwrap();
+    let snap1 = RaftSnapshotBuilder::<TypeConfig>::build_snapshot(&mut store)
+        .await
+        .unwrap();
     let id1 = snap1.meta.snapshot_id.clone();
 
     // Append more entries
@@ -322,8 +318,9 @@ async fn two_sequential_snapshots_are_consistent() {
     store.append_to_log(entries2).await.unwrap();
 
     // Second snapshot
-    let snap2 =
-        RaftSnapshotBuilder::<TypeConfig>::build_snapshot(&mut store).await.unwrap();
+    let snap2 = RaftSnapshotBuilder::<TypeConfig>::build_snapshot(&mut store)
+        .await
+        .unwrap();
     let id2 = snap2.meta.snapshot_id.clone();
 
     // The two snapshots must have distinct IDs (UUIDs differ)

@@ -6,7 +6,10 @@ use prometheus::{
 lazy_static! {
     pub static ref REGISTRY: Registry = Registry::new();
     pub static ref QUERIES_TOTAL: IntCounterVec = IntCounterVec::new(
-        Opts::new("synaptica_queries_total", "Total number of queries executed"),
+        Opts::new(
+            "synaptica_queries_total",
+            "Total number of queries executed"
+        ),
         &["status"],
     )
     .unwrap();
@@ -18,12 +21,21 @@ lazy_static! {
         &["graph"],
     )
     .unwrap();
-    pub static ref ACTIVE_CONNECTIONS: IntGauge =
-        IntGauge::new("synaptica_active_connections", "Number of active connections").unwrap();
-    pub static ref NODES_TOTAL: IntGauge =
-        IntGauge::new("synaptica_nodes_total", "Total number of nodes in the database").unwrap();
-    pub static ref EDGES_TOTAL: IntGauge =
-        IntGauge::new("synaptica_edges_total", "Total number of edges in the database").unwrap();
+    pub static ref ACTIVE_CONNECTIONS: IntGauge = IntGauge::new(
+        "synaptica_active_connections",
+        "Number of active connections"
+    )
+    .unwrap();
+    pub static ref NODES_TOTAL: IntGauge = IntGauge::new(
+        "synaptica_nodes_total",
+        "Total number of nodes in the database"
+    )
+    .unwrap();
+    pub static ref EDGES_TOTAL: IntGauge = IntGauge::new(
+        "synaptica_edges_total",
+        "Total number of edges in the database"
+    )
+    .unwrap();
 }
 
 pub fn register_metrics() {

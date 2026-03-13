@@ -1,9 +1,9 @@
 use crate::partition::PartitionId;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
-use parking_lot::Mutex;
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -267,9 +267,7 @@ impl TwoPhaseCoordinator {
         }
 
         // WAL: record prepare intent *before* contacting participants
-        self.log
-            .lock()
-            .log_prepare(tx_id, &participant_ids);
+        self.log.lock().log_prepare(tx_id, &participant_ids);
 
         // Contact each participant
         let mut all_yes = true;
@@ -388,10 +386,7 @@ impl TwoPhaseCoordinator {
 
     /// Retrieve the current state of a distributed transaction.
     pub fn state(&self, tx_id: &DistributedTxId) -> Option<DistributedTxState> {
-        self.transactions
-            .lock()
-            .get(tx_id)
-            .map(|r| r.state.clone())
+        self.transactions.lock().get(tx_id).map(|r| r.state.clone())
     }
 }
 

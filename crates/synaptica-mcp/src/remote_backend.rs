@@ -9,9 +9,9 @@ mod proto {
 
 use proto::synaptica_service_client::SynapticaServiceClient;
 use proto::{
-    gql_value, ClusterStatusRequest, CreateBackupRequest, CreateIndexRequest,
-    DeleteBackupRequest, DropIndexRequest, GetSchemaRequest, HealthRequest, ListBackupsRequest,
-    ListGraphsRequest, ListIndexesRequest, ListLabelsRequest, QueryRequest,
+    gql_value, ClusterStatusRequest, CreateBackupRequest, CreateIndexRequest, DeleteBackupRequest,
+    DropIndexRequest, GetSchemaRequest, HealthRequest, ListBackupsRequest, ListGraphsRequest,
+    ListIndexesRequest, ListLabelsRequest, QueryRequest,
 };
 
 /// Remote backend — connects to a running Synaptica server via gRPC.
@@ -158,9 +158,7 @@ impl SynapticaBackend for RemoteBackend {
         let mut client = self.client.clone();
 
         let resp = client
-            .get_schema(GetSchemaRequest {
-                graph_name,
-            })
+            .get_schema(GetSchemaRequest { graph_name })
             .await?
             .into_inner();
 
@@ -255,19 +253,11 @@ impl SynapticaBackend for RemoteBackend {
         if resp.success {
             Ok(format!("Index created on :{}({})", label, property))
         } else {
-            anyhow::bail!(
-                "Failed to create index: {}",
-                resp.error.unwrap_or_default()
-            )
+            anyhow::bail!("Failed to create index: {}", resp.error.unwrap_or_default())
         }
     }
 
-    async fn drop_index(
-        &self,
-        label: &str,
-        property: &str,
-        graph: &str,
-    ) -> anyhow::Result<String> {
+    async fn drop_index(&self, label: &str, property: &str, graph: &str) -> anyhow::Result<String> {
         let graph_name = self.resolve_graph(graph);
         let mut client = self.client.clone();
 
@@ -282,19 +272,13 @@ impl SynapticaBackend for RemoteBackend {
         if resp.success {
             Ok(format!("Index dropped on :{}({})", label, property))
         } else {
-            anyhow::bail!(
-                "Failed to drop index: {}",
-                resp.error.unwrap_or_default()
-            )
+            anyhow::bail!("Failed to drop index: {}", resp.error.unwrap_or_default())
         }
     }
 
     async fn health(&self) -> anyhow::Result<HealthInfo> {
         let mut client = self.client.clone();
-        let resp = client
-            .health(HealthRequest {})
-            .await?
-            .into_inner();
+        let resp = client.health(HealthRequest {}).await?.into_inner();
 
         Ok(HealthInfo {
             status: resp.status,
@@ -327,10 +311,7 @@ impl SynapticaBackend for RemoteBackend {
 
     async fn list_graphs(&self) -> anyhow::Result<Vec<GraphSummary>> {
         let mut client = self.client.clone();
-        let resp = client
-            .list_graphs(ListGraphsRequest {})
-            .await?
-            .into_inner();
+        let resp = client.list_graphs(ListGraphsRequest {}).await?.into_inner();
 
         Ok(resp
             .graphs

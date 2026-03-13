@@ -136,11 +136,7 @@ impl Snapshot {
         Ok(self.store.get_at(cf_name, key, self.ts)?)
     }
 
-    pub fn prefix_scan(
-        &self,
-        cf_name: &str,
-        prefix: &[u8],
-    ) -> TxResult<Vec<(Vec<u8>, Vec<u8>)>> {
+    pub fn prefix_scan(&self, cf_name: &str, prefix: &[u8]) -> TxResult<Vec<(Vec<u8>, Vec<u8>)>> {
         Ok(self.store.prefix_scan_at(cf_name, prefix, self.ts)?)
     }
 }

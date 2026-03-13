@@ -3,7 +3,7 @@ use std::sync::Arc;
 use synaptica_core::graph::{Edge, GraphId, Label, Node};
 use synaptica_core::types::Value;
 use synaptica_storage::engine::{StorageConfig, StorageEngine};
-use synaptica_storage::mvcc::{MvccStore, TimestampOracle};
+use synaptica_storage::mvcc::TimestampOracle;
 
 fn make_engine(dir: &std::path::Path) -> StorageEngine {
     StorageEngine::open(dir, &StorageConfig::default()).unwrap()
@@ -152,7 +152,7 @@ fn bench_mvcc_write(c: &mut Criterion) {
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path());
     let ts_oracle = Arc::new(TimestampOracle::new());
-    let store = MvccStore::new(engine.raw_db().clone(), ts_oracle.clone());
+    let store = engine.create_mvcc_store(ts_oracle.clone());
 
     c.bench_function("mvcc_write", |b| {
         b.iter(|| {
@@ -168,7 +168,7 @@ fn bench_mvcc_read_at_snapshot(c: &mut Criterion) {
     let dir = tempfile::tempdir().unwrap();
     let engine = make_engine(dir.path());
     let ts_oracle = Arc::new(TimestampOracle::new());
-    let store = MvccStore::new(engine.raw_db().clone(), ts_oracle.clone());
+    let store = engine.create_mvcc_store(ts_oracle.clone());
 
     // Write multiple versions
     for i in 0..100u64 {

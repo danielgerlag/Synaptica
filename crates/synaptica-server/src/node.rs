@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use openraft::BasicNode;
-use synaptica_core::graph::{GraphId, GraphMeta};
 use synaptica_cluster::log_store::RocksLogStore;
 use synaptica_cluster::network::GrpcNetwork;
 use synaptica_cluster::raft::{NodeId, SynapticaRaft, TypeConfig};
 use synaptica_cluster::state_machine::StateMachineApplier;
+use synaptica_core::graph::{GraphId, GraphMeta};
 use synaptica_storage::engine::{StorageConfig, StorageEngine};
 
 use crate::config::ServerConfig;
@@ -70,7 +70,7 @@ impl NodeRuntime {
 
         // Create RocksDB-backed log store sharing the same DB, with the applier
         let log_store = Arc::new(RocksLogStore::with_applier(
-            self.storage.raw_db().clone(),
+            self.storage.clone(),
             applier.clone(),
         ));
 
@@ -90,14 +90,9 @@ impl NodeRuntime {
         let (log_store_adapter, sm_adapter) =
             openraft::storage::Adaptor::<TypeConfig, Arc<RocksLogStore>>::new(log_store);
 
-        let raft = openraft::Raft::new(
-            node_id,
-            raft_config,
-            network,
-            log_store_adapter,
-            sm_adapter,
-        )
-        .await?;
+        let raft =
+            openraft::Raft::new(node_id, raft_config, network, log_store_adapter, sm_adapter)
+                .await?;
 
         // If this is the first node (no peers), initialize as single-node cluster
         if peers.is_empty() {

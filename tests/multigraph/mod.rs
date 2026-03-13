@@ -43,7 +43,9 @@ impl MultiGraphEnv {
         let planner = QueryPlanner::new();
         let plan = planner.plan(&program).map_err(|e| format!("{e}"))?;
         let engine = ExecutionEngine::new(&self.storage);
-        engine.execute_plan(&plan, &graph_id).map_err(|e| format!("{e}"))
+        engine
+            .execute_plan(&plan, &graph_id)
+            .map_err(|e| format!("{e}"))
     }
 
     fn create_graph(&self, name: &str) {
@@ -280,14 +282,8 @@ fn mutations_on_one_graph_dont_affect_another() {
     env.exec("volatile", "MATCH (n) DELETE n");
 
     // Stable should be untouched
-    assert_eq!(
-        env.exec("stable", "MATCH (n) RETURN n").records.len(),
-        2
-    );
-    assert_eq!(
-        env.exec("volatile", "MATCH (n) RETURN n").records.len(),
-        0
-    );
+    assert_eq!(env.exec("stable", "MATCH (n) RETURN n").records.len(), 2);
+    assert_eq!(env.exec("volatile", "MATCH (n) RETURN n").records.len(), 0);
 }
 
 #[test]
@@ -406,7 +402,9 @@ fn drop_and_recreate_graph() {
     env.exec("temp", "INSERT (:Data {val: 'old'})");
     assert_eq!(env.exec("temp", "MATCH (n) RETURN n").records.len(), 1);
 
-    env.storage.delete_graph(&GraphId::from_name("temp")).unwrap();
+    env.storage
+        .delete_graph(&GraphId::from_name("temp"))
+        .unwrap();
     env.create_graph("temp");
 
     assert_eq!(env.exec("temp", "MATCH (n) RETURN n").records.len(), 0);
@@ -466,10 +464,7 @@ fn traversal_isolated_between_graphs() {
     assert_eq!(col_strings(&rs, "c.name"), vec!["C"]);
 
     // Same traversal in "other" should find nothing
-    let rs2 = env.exec(
-        "other",
-        "MATCH (a:N)-[:NEXT]->(b) RETURN b.name",
-    );
+    let rs2 = env.exec("other", "MATCH (a:N)-[:NEXT]->(b) RETURN b.name");
     assert_eq!(rs2.records.len(), 0);
 }
 

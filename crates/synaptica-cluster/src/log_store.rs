@@ -16,12 +16,11 @@ use openraft::StorageError;
 use openraft::StorageIOError;
 use openraft::StoredMembership;
 use openraft::Vote;
-use rocksdb::{DBWithThreadMode, MultiThreaded};
 use tokio::sync::RwLock;
 
-use crate::raft::{NodeId, RaftRequest, RaftResponse, TypeConfig};
+use crate::raft::{NodeId, RaftResponse, TypeConfig};
 use crate::state_machine::StateMachineApplier;
-use synaptica_storage::cf::ColumnFamilies;
+use synaptica_storage::engine::{StorageEngine, StorageResult};
 
 const VOTE_KEY: &[u8] = b"raft_vote";
 const LAST_PURGED_KEY: &[u8] = b"raft_last_purged";
@@ -34,7 +33,7 @@ const LAST_MEMBERSHIP_KEY: &[u8] = b"raft_last_membership";
 /// Stores log entries in RAFT_LOG column family (key = big-endian u64 index).
 /// Stores metadata (vote, purged marker, applied state, membership) in RAFT_META.
 pub struct RocksLogStore {
-    db: Arc<DBWithThreadMode<MultiThreaded>>,
+    storage: Arc<StorageEngine>,
     applier: Option<Arc<StateMachineApplier>>,
     current_snapshot: RwLock<Option<StoredSnapshot>>,
 }
@@ -46,21 +45,18 @@ pub struct StoredSnapshot {
 }
 
 impl RocksLogStore {
-    pub fn new(db: Arc<DBWithThreadMode<MultiThreaded>>) -> Self {
+    pub fn new(storage: Arc<StorageEngine>) -> Self {
         Self {
-            db,
+            storage,
             applier: None,
             current_snapshot: RwLock::new(None),
         }
     }
 
     /// Create a log store with a state machine applier that executes committed mutations.
-    pub fn with_applier(
-        db: Arc<DBWithThreadMode<MultiThreaded>>,
-        applier: Arc<StateMachineApplier>,
-    ) -> Self {
+    pub fn with_applier(storage: Arc<StorageEngine>, applier: Arc<StateMachineApplier>) -> Self {
         Self {
-            db,
+            storage,
             applier: Some(applier),
             current_snapshot: RwLock::new(None),
         }
@@ -70,30 +66,25 @@ impl RocksLogStore {
         index.to_be_bytes()
     }
 
-    // Synchronous helpers that don't hold cf handles across await points.
-    fn meta_get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, rocksdb::Error> {
-        let cf = self.db.cf_handle(ColumnFamilies::RAFT_META).expect("RAFT_META cf");
-        self.db.get_cf(&cf, key)
+    // Synchronous helpers that don't hold iterator state across await points.
+    fn meta_get(&self, key: &[u8]) -> StorageResult<Option<Vec<u8>>> {
+        self.storage.raft_meta_get(key)
     }
 
-    fn meta_put(&self, key: &[u8], value: &[u8]) -> Result<(), rocksdb::Error> {
-        let cf = self.db.cf_handle(ColumnFamilies::RAFT_META).expect("RAFT_META cf");
-        self.db.put_cf(&cf, key, value)
+    fn meta_put(&self, key: &[u8], value: &[u8]) -> StorageResult<()> {
+        self.storage.raft_meta_put(key, value)
     }
 
-    fn meta_delete(&self, key: &[u8]) -> Result<(), rocksdb::Error> {
-        let cf = self.db.cf_handle(ColumnFamilies::RAFT_META).expect("RAFT_META cf");
-        self.db.delete_cf(&cf, key)
+    fn meta_delete(&self, key: &[u8]) -> StorageResult<()> {
+        self.storage.raft_meta_delete(key)
     }
 
-    fn log_put(&self, key: &[u8], value: &[u8]) -> Result<(), rocksdb::Error> {
-        let cf = self.db.cf_handle(ColumnFamilies::RAFT_LOG).expect("RAFT_LOG cf");
-        self.db.put_cf(&cf, key, value)
+    fn log_put(&self, key: &[u8], value: &[u8]) -> StorageResult<()> {
+        self.storage.raft_log_put(key, value)
     }
 
-    fn log_delete(&self, key: &[u8]) -> Result<(), rocksdb::Error> {
-        let cf = self.db.cf_handle(ColumnFamilies::RAFT_LOG).expect("RAFT_LOG cf");
-        self.db.delete_cf(&cf, key)
+    fn log_delete(&self, key: &[u8]) -> StorageResult<()> {
+        self.storage.raft_log_delete(key)
     }
 
     fn read_log_entries_sync(
@@ -101,17 +92,14 @@ impl RocksLogStore {
         start: u64,
         end: Option<u64>,
     ) -> Result<Vec<Entry<TypeConfig>>, StorageError<NodeId>> {
-        let cf = self.db.cf_handle(ColumnFamilies::RAFT_LOG).expect("RAFT_LOG cf");
+        let start_key = Self::index_to_key(start);
+        let scanned = self
+            .storage
+            .raft_log_scan_from(&start_key)
+            .map_err(|e| StorageIOError::read_logs(&e))?;
+
         let mut entries = Vec::new();
-        let iter = self.db.iterator_cf(
-            &cf,
-            rocksdb::IteratorMode::From(
-                &Self::index_to_key(start),
-                rocksdb::Direction::Forward,
-            ),
-        );
-        for item in iter {
-            let (key, value) = item.map_err(|e| StorageIOError::read_logs(&e))?;
+        for (key, value) in scanned {
             if key.len() != 8 {
                 continue;
             }
@@ -129,59 +117,49 @@ impl RocksLogStore {
     }
 
     fn last_log_id_sync(&self) -> Result<Option<LogId<NodeId>>, StorageError<NodeId>> {
-        let cf = self.db.cf_handle(ColumnFamilies::RAFT_LOG).expect("RAFT_LOG cf");
-        let mut iter = self.db.raw_iterator_cf(&cf);
-        iter.seek_to_last();
-        if iter.valid() {
-            if let Some(value) = iter.value() {
+        match self
+            .storage
+            .raft_log_last()
+            .map_err(|e| StorageIOError::read_logs(&e))?
+        {
+            Some(value) => {
                 let entry: Entry<TypeConfig> =
-                    bincode::deserialize(value).map_err(|e| StorageIOError::read_logs(&*e))?;
-                return Ok(Some(*entry.get_log_id()));
+                    bincode::deserialize(&value).map_err(|e| StorageIOError::read_logs(&*e))?;
+                Ok(Some(*entry.get_log_id()))
             }
+            None => Ok(None),
         }
-        Ok(None)
     }
 
     fn delete_logs_from_sync(&self, from_index: u64) -> Result<(), StorageError<NodeId>> {
-        let cf = self.db.cf_handle(ColumnFamilies::RAFT_LOG).expect("RAFT_LOG cf");
+        let start_key = Self::index_to_key(from_index);
         let keys: Vec<Vec<u8>> = self
-            .db
-            .iterator_cf(
-                &cf,
-                rocksdb::IteratorMode::From(
-                    &Self::index_to_key(from_index),
-                    rocksdb::Direction::Forward,
-                ),
-            )
-            .filter_map(|item| item.ok().map(|(k, _)| k.to_vec()))
+            .storage
+            .raft_log_scan_from(&start_key)
+            .map_err(|e| StorageIOError::read_logs(&e))?
+            .into_iter()
+            .map(|(key, _)| key)
             .collect();
         for key in keys {
-            self.log_delete(&key).map_err(|e| StorageIOError::write_logs(&e))?;
+            self.log_delete(&key)
+                .map_err(|e| StorageIOError::write_logs(&e))?;
         }
         Ok(())
     }
 
     fn delete_logs_upto_sync(&self, upto_index: u64) -> Result<(), StorageError<NodeId>> {
-        let cf = self.db.cf_handle(ColumnFamilies::RAFT_LOG).expect("RAFT_LOG cf");
-        let end_key = Self::index_to_key(upto_index + 1);
+        let start_key = Self::index_to_key(0);
+        let end_key = Self::index_to_key(upto_index.saturating_add(1));
         let keys: Vec<Vec<u8>> = self
-            .db
-            .iterator_cf(
-                &cf,
-                rocksdb::IteratorMode::From(&[0u8; 8], rocksdb::Direction::Forward),
-            )
-            .filter_map(|item| {
-                item.ok().and_then(|(k, _)| {
-                    if k[..] < end_key[..] {
-                        Some(k.to_vec())
-                    } else {
-                        None
-                    }
-                })
-            })
+            .storage
+            .raft_log_scan_from(&start_key)
+            .map_err(|e| StorageIOError::read_logs(&e))?
+            .into_iter()
+            .filter_map(|(key, _)| (key[..] < end_key[..]).then_some(key))
             .collect();
         for key in keys {
-            self.log_delete(&key).map_err(|e| StorageIOError::write_logs(&e))?;
+            self.log_delete(&key)
+                .map_err(|e| StorageIOError::write_logs(&e))?;
         }
         Ok(())
     }
@@ -238,7 +216,10 @@ impl RaftStorage<TypeConfig> for Arc<RocksLogStore> {
     }
 
     async fn read_vote(&mut self) -> Result<Option<Vote<NodeId>>, StorageError<NodeId>> {
-        match self.meta_get(VOTE_KEY).map_err(|e| StorageIOError::read_vote(&e))? {
+        match self
+            .meta_get(VOTE_KEY)
+            .map_err(|e| StorageIOError::read_vote(&e))?
+        {
             Some(bytes) => {
                 let vote: Vote<NodeId> =
                     bincode::deserialize(&bytes).map_err(|e| StorageIOError::read_vote(&*e))?;
@@ -266,7 +247,10 @@ impl RaftStorage<TypeConfig> for Arc<RocksLogStore> {
     }
 
     async fn read_committed(&mut self) -> Result<Option<LogId<NodeId>>, StorageError<NodeId>> {
-        match self.meta_get(COMMITTED_KEY).map_err(|e| StorageIOError::read(&e))? {
+        match self
+            .meta_get(COMMITTED_KEY)
+            .map_err(|e| StorageIOError::read(&e))?
+        {
             Some(bytes) => {
                 let log_id: LogId<NodeId> =
                     bincode::deserialize(&bytes).map_err(|e| StorageIOError::read(&*e))?;
@@ -347,8 +331,8 @@ impl RaftStorage<TypeConfig> for Arc<RocksLogStore> {
                 }
                 openraft::EntryPayload::Membership(mem) => {
                     let stored = StoredMembership::new(Some(entry.log_id), mem.clone());
-                    let bytes = bincode::serialize(&stored)
-                        .map_err(|e| StorageIOError::write(&*e))?;
+                    let bytes =
+                        bincode::serialize(&stored).map_err(|e| StorageIOError::write(&*e))?;
                     self.meta_put(LAST_MEMBERSHIP_KEY, &bytes)
                         .map_err(|e| StorageIOError::write(&e))?;
                     responses.push(RaftResponse {
@@ -399,8 +383,8 @@ impl RaftStorage<TypeConfig> for Arc<RocksLogStore> {
             self.meta_put(LAST_APPLIED_KEY, &bytes)
                 .map_err(|e| StorageIOError::write(&e))?;
         }
-        let mem_bytes = bincode::serialize(&meta.last_membership)
-            .map_err(|e| StorageIOError::write(&*e))?;
+        let mem_bytes =
+            bincode::serialize(&meta.last_membership).map_err(|e| StorageIOError::write(&*e))?;
         self.meta_put(LAST_MEMBERSHIP_KEY, &mem_bytes)
             .map_err(|e| StorageIOError::write(&e))?;
 

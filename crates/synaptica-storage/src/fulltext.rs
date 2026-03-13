@@ -62,7 +62,12 @@ impl FullTextIndex {
     fn cf(&self) -> StorageResult<Arc<rocksdb::BoundColumnFamily<'_>>> {
         self.db
             .cf_handle(ColumnFamilies::PROP_INDEX)
-            .ok_or_else(|| StorageError::CfNotFound(ColumnFamilies::PROP_INDEX.to_string()))
+            .ok_or_else(|| {
+                StorageError::Internal(format!(
+                    "column family not found: {}",
+                    ColumnFamilies::PROP_INDEX
+                ))
+            })
     }
 
     /// Build a key: graph_id ++ FT_MARKER ++ name_hash ++ token ++ 0x00 ++ node_id

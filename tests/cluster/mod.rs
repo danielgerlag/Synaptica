@@ -46,14 +46,21 @@ fn make_partition(id: &str, start: u8, end: u8, leader: &str) -> Partition {
 #[test]
 fn test_partition_routing_integration() {
     let mut pm = PartitionMap::new();
-    pm.add_partition(make_partition("p1", 0x00, 0x55, "node-1")).unwrap();
-    pm.add_partition(make_partition("p2", 0x55, 0xAA, "node-2")).unwrap();
-    pm.add_partition(make_partition("p3", 0xAA, 0xFF, "node-3")).unwrap();
+    pm.add_partition(make_partition("p1", 0x00, 0x55, "node-1"))
+        .unwrap();
+    pm.add_partition(make_partition("p2", 0x55, 0xAA, "node-2"))
+        .unwrap();
+    pm.add_partition(make_partition("p3", 0xAA, 0xFF, "node-3"))
+        .unwrap();
 
     let router = QueryRouter::new();
     let result = router.route_query("SELECT * FROM nodes", &pm);
 
-    assert_eq!(result.len(), 1, "router should produce exactly one sub-query");
+    assert_eq!(
+        result.len(),
+        1,
+        "router should produce exactly one sub-query"
+    );
     // The stub routes to the first partition (sorted by range start).
     assert_eq!(result[0].0, PartitionId("p1".to_string()));
     assert_eq!(result[0].1.query, "SELECT * FROM nodes");
@@ -89,9 +96,12 @@ fn test_partition_map_with_membership() {
     membership.add_node(make_node("node-3", true));
 
     let mut pm = PartitionMap::new();
-    pm.add_partition(make_partition("p1", 0x00, 0x55, "node-1")).unwrap();
-    pm.add_partition(make_partition("p2", 0x55, 0xAA, "node-2")).unwrap();
-    pm.add_partition(make_partition("p3", 0xAA, 0xFF, "node-3")).unwrap();
+    pm.add_partition(make_partition("p1", 0x00, 0x55, "node-1"))
+        .unwrap();
+    pm.add_partition(make_partition("p2", 0x55, 0xAA, "node-2"))
+        .unwrap();
+    pm.add_partition(make_partition("p3", 0xAA, 0xFF, "node-3"))
+        .unwrap();
 
     // Mark node-2 as dead.
     membership.mark_dead("node-2");
@@ -147,9 +157,12 @@ fn test_full_cluster_simulation() {
 
     // (b) Partition map
     let mut pm = PartitionMap::new();
-    pm.add_partition(make_partition("p1", 0x00, 0x55, "node-1")).unwrap();
-    pm.add_partition(make_partition("p2", 0x55, 0xAA, "node-2")).unwrap();
-    pm.add_partition(make_partition("p3", 0xAA, 0xFF, "node-3")).unwrap();
+    pm.add_partition(make_partition("p1", 0x00, 0x55, "node-1"))
+        .unwrap();
+    pm.add_partition(make_partition("p2", 0x55, 0xAA, "node-2"))
+        .unwrap();
+    pm.add_partition(make_partition("p3", 0xAA, 0xFF, "node-3"))
+        .unwrap();
     assert_eq!(pm.all_partitions().len(), 3);
 
     // (c) Route a query
@@ -206,9 +219,9 @@ fn test_rebalance_after_node_addition() {
 // Raft integration tests
 // ===========================================================================
 
+use synaptica_cluster::log_store::RocksLogStore;
 use synaptica_cluster::raft::{RaftRequest, RaftResponse, TypeConfig};
 use synaptica_cluster::state_machine::StateMachineApplier;
-use synaptica_cluster::log_store::RocksLogStore;
 
 /// Test that the StateMachineApplier can execute INSERT mutations.
 #[test]
@@ -242,10 +255,7 @@ fn test_state_machine_insert_and_query() {
     // Verify the node exists by querying storage directly
     let nodes = storage.scan_nodes(&graph_id).unwrap();
     assert_eq!(nodes.len(), 1);
-    assert!(nodes[0]
-        .labels
-        .iter()
-        .any(|l| l.0 == "Person"));
+    assert!(nodes[0].labels.iter().any(|l| l.0 == "Person"));
 }
 
 /// Test multiple sequential mutations via the applier.
@@ -314,15 +324,15 @@ async fn test_log_store_vote_persistence() {
     use openraft::RaftStorage;
 
     let dir = tempfile::tempdir().unwrap();
-    let storage = synaptica_storage::engine::StorageEngine::open(
-        dir.path(),
-        &synaptica_storage::engine::StorageConfig::default(),
-    )
-    .unwrap();
+    let storage = std::sync::Arc::new(
+        synaptica_storage::engine::StorageEngine::open(
+            dir.path(),
+            &synaptica_storage::engine::StorageConfig::default(),
+        )
+        .unwrap(),
+    );
 
-    let mut store = std::sync::Arc::new(RocksLogStore::new(
-        storage.raw_db().clone(),
-    ));
+    let mut store = std::sync::Arc::new(RocksLogStore::new(storage.clone()));
 
     // Initially no vote
     let vote = store.read_vote().await.unwrap();
@@ -342,19 +352,19 @@ async fn test_log_store_vote_persistence() {
 /// Test RocksDB-backed log store — append and read log entries.
 #[tokio::test]
 async fn test_log_store_append_and_read() {
-    use openraft::{Entry, LogId, RaftStorage};
     use openraft::storage::RaftLogReader;
+    use openraft::{Entry, LogId, RaftStorage};
 
     let dir = tempfile::tempdir().unwrap();
-    let storage = synaptica_storage::engine::StorageEngine::open(
-        dir.path(),
-        &synaptica_storage::engine::StorageConfig::default(),
-    )
-    .unwrap();
+    let storage = std::sync::Arc::new(
+        synaptica_storage::engine::StorageEngine::open(
+            dir.path(),
+            &synaptica_storage::engine::StorageConfig::default(),
+        )
+        .unwrap(),
+    );
 
-    let mut store = std::sync::Arc::new(RocksLogStore::new(
-        storage.raw_db().clone(),
-    ));
+    let mut store = std::sync::Arc::new(RocksLogStore::new(storage.clone()));
 
     // Append entries
     let entries = vec![
@@ -438,8 +448,8 @@ fn test_write_query_classification() {
 /// Test single-node Raft cluster: initialize, write, verify committed.
 #[tokio::test]
 async fn test_single_node_raft_cluster() {
-    use std::collections::BTreeMap;
     use openraft::BasicNode;
+    use std::collections::BTreeMap;
     use synaptica_cluster::raft::SynapticaRaft;
 
     let dir = tempfile::tempdir().unwrap();
@@ -459,9 +469,7 @@ async fn test_single_node_raft_cluster() {
     storage.put_graph_meta(&meta).unwrap();
 
     // Create log store
-    let log_store = std::sync::Arc::new(RocksLogStore::new(
-        storage.raw_db().clone(),
-    ));
+    let log_store = std::sync::Arc::new(RocksLogStore::new(storage.clone()));
 
     // Raft config
     let config = openraft::Config {
@@ -476,8 +484,7 @@ async fn test_single_node_raft_cluster() {
     let network = synaptica_cluster::network::GrpcNetwork;
 
     // Create Raft using Adaptor for combined RaftStorage
-    let (ls, sm) =
-        openraft::storage::Adaptor::<TypeConfig, _>::new(log_store);
+    let (ls, sm) = openraft::storage::Adaptor::<TypeConfig, _>::new(log_store);
 
     let raft: SynapticaRaft = openraft::Raft::new(1, config, network, ls, sm)
         .await
@@ -485,7 +492,12 @@ async fn test_single_node_raft_cluster() {
 
     // Initialize single-node cluster
     let mut members = BTreeMap::new();
-    members.insert(1u64, BasicNode { addr: "127.0.0.1:9191".to_string() });
+    members.insert(
+        1u64,
+        BasicNode {
+            addr: "127.0.0.1:9191".to_string(),
+        },
+    );
     raft.initialize(members).await.unwrap();
 
     // Wait for leader election
@@ -516,7 +528,10 @@ async fn test_single_node_raft_cluster() {
 
     // Verify data in storage
     let nodes = storage.scan_nodes(&graph_id).unwrap();
-    assert!(!nodes.is_empty(), "should have at least one node after raft write + apply");
+    assert!(
+        !nodes.is_empty(),
+        "should have at least one node after raft write + apply"
+    );
 
     // Shutdown
     let _ = raft.shutdown().await;

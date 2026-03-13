@@ -13,8 +13,8 @@ use openraft::error::{
 };
 use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
 use openraft::raft::{
-    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
-    InstallSnapshotResponse, VoteRequest, VoteResponse,
+    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
+    VoteRequest, VoteResponse,
 };
 use openraft::BasicNode;
 use tokio::sync::RwLock;
@@ -126,10 +126,9 @@ impl RaftNetwork<TypeConfig> for TestNetworkConn {
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<NodeId>, TestRPCError> {
         if self.is_partitioned().await {
-            return Err(RPCError::Unreachable(Unreachable::new(&std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                "node blocked",
-            ))));
+            return Err(RPCError::Unreachable(Unreachable::new(
+                &std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "node blocked"),
+            )));
         }
         let raft = self.router.get(self.target).await.ok_or_else(|| {
             RPCError::Unreachable(Unreachable::new(&std::io::Error::new(
@@ -148,10 +147,9 @@ impl RaftNetwork<TypeConfig> for TestNetworkConn {
         _option: RPCOption,
     ) -> Result<InstallSnapshotResponse<NodeId>, TestRPCError<InstallSnapshotError>> {
         if self.is_partitioned().await {
-            return Err(RPCError::Unreachable(Unreachable::new(&std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                "node blocked",
-            ))));
+            return Err(RPCError::Unreachable(Unreachable::new(
+                &std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "node blocked"),
+            )));
         }
         let raft = self.router.get(self.target).await.ok_or_else(|| {
             RPCError::Unreachable(Unreachable::new(&std::io::Error::new(
@@ -170,10 +168,9 @@ impl RaftNetwork<TypeConfig> for TestNetworkConn {
         _option: RPCOption,
     ) -> Result<VoteResponse<NodeId>, TestRPCError> {
         if self.is_partitioned().await {
-            return Err(RPCError::Unreachable(Unreachable::new(&std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                "node blocked",
-            ))));
+            return Err(RPCError::Unreachable(Unreachable::new(
+                &std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "node blocked"),
+            )));
         }
         let raft = self.router.get(self.target).await.ok_or_else(|| {
             RPCError::Unreachable(Unreachable::new(&std::io::Error::new(
@@ -236,9 +233,8 @@ impl TestCluster {
         // Create all nodes
         for id in 1..=n {
             let dir = tempfile::tempdir().unwrap();
-            let storage = Arc::new(
-                StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap(),
-            );
+            let storage =
+                Arc::new(StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap());
 
             // Create the default graph
             let graph_id = GraphId::from_name(graph_name);
@@ -251,22 +247,17 @@ impl TestCluster {
 
             let applier = Arc::new(StateMachineApplier::new(storage.clone()));
             let log_store = Arc::new(RocksLogStore::with_applier(
-                storage.raw_db().clone(),
+                storage.clone(),
                 applier.clone(),
             ));
 
             let (ls, sm) =
                 openraft::storage::Adaptor::<TypeConfig, Arc<RocksLogStore>>::new(log_store);
 
-            let raft: SynapticaRaft = openraft::Raft::new(
-                id,
-                raft_config.clone(),
-                router.clone_for_node(id),
-                ls,
-                sm,
-            )
-            .await
-            .unwrap();
+            let raft: SynapticaRaft =
+                openraft::Raft::new(id, raft_config.clone(), router.clone_for_node(id), ls, sm)
+                    .await
+                    .unwrap();
 
             router.register(id, raft.clone()).await;
             nodes.insert(
@@ -404,7 +395,10 @@ impl TestCluster {
     pub fn count_edges_on(&self, node_id: NodeId) -> usize {
         let node = self.nodes.get(&node_id).unwrap();
         let graph_id = GraphId::from_name(&self.graph_name);
-        node.storage.scan_edges_limit(&graph_id, usize::MAX).unwrap().len()
+        node.storage
+            .scan_edges_limit(&graph_id, usize::MAX)
+            .unwrap()
+            .len()
     }
 
     /// Wait for replication to converge — all nodes have the same node count.
@@ -418,10 +412,7 @@ impl TestCluster {
                     .keys()
                     .map(|id| (*id, self.count_nodes_on(*id)))
                     .collect();
-                panic!(
-                    "timeout waiting for convergence. node counts: {:?}",
-                    counts
-                );
+                panic!("timeout waiting for convergence. node counts: {:?}", counts);
             }
             let counts: Vec<usize> = self
                 .nodes
@@ -451,16 +442,13 @@ impl TestCluster {
                     expected, counts
                 );
             }
-            let all_match = self
-                .nodes
-                .keys()
-                .all(|id| {
-                    let blocked = {
-                        let b = self.router.blocked.try_read();
-                        b.map_or(false, |b| b.contains(id))
-                    };
-                    blocked || self.count_nodes_on(*id) == expected
-                });
+            let all_match = self.nodes.keys().all(|id| {
+                let blocked = {
+                    let b = self.router.blocked.try_read();
+                    b.map_or(false, |b| b.contains(id))
+                };
+                blocked || self.count_nodes_on(*id) == expected
+            });
             if all_match {
                 return;
             }
@@ -478,9 +466,7 @@ impl TestCluster {
     /// Add a new node as a learner to the cluster.
     pub async fn add_learner(&mut self, new_id: NodeId) {
         let dir = tempfile::tempdir().unwrap();
-        let storage = Arc::new(
-            StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap(),
-        );
+        let storage = Arc::new(StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap());
         let graph_id = GraphId::from_name(&self.graph_name);
         let meta = GraphMeta {
             id: graph_id,
@@ -491,7 +477,7 @@ impl TestCluster {
 
         let applier = Arc::new(StateMachineApplier::new(storage.clone()));
         let log_store = Arc::new(RocksLogStore::with_applier(
-            storage.raw_db().clone(),
+            storage.clone(),
             applier.clone(),
         ));
 
@@ -507,8 +493,7 @@ impl TestCluster {
             .unwrap(),
         );
 
-        let (ls, sm) =
-            openraft::storage::Adaptor::<TypeConfig, Arc<RocksLogStore>>::new(log_store);
+        let (ls, sm) = openraft::storage::Adaptor::<TypeConfig, Arc<RocksLogStore>>::new(log_store);
 
         let raft: SynapticaRaft = openraft::Raft::new(
             new_id,

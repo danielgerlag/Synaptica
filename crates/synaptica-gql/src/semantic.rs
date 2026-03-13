@@ -156,7 +156,11 @@ impl SemanticAnalyzer {
                     self.check_expression(val)?;
                 }
             }
-            Expression::Case { operand, when_clauses, else_clause } => {
+            Expression::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
                 if let Some(ref op) = operand {
                     self.check_expression(op)?;
                 }
@@ -249,8 +253,7 @@ mod tests {
     #[test]
     fn test_multiple_variables_valid() {
         assert!(
-            analyze_gql("MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, r, b.name")
-                .is_ok()
+            analyze_gql("MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, r, b.name").is_ok()
         );
     }
 
@@ -288,9 +291,7 @@ mod tests {
 
     #[test]
     fn test_case_undefined_variable() {
-        let result = analyze_gql(
-            "MATCH (n) RETURN CASE WHEN m.age > 30 THEN 1 ELSE 0 END",
-        );
+        let result = analyze_gql("MATCH (n) RETURN CASE WHEN m.age > 30 THEN 1 ELSE 0 END");
         assert_eq!(
             result.unwrap_err(),
             SemanticError::UndefinedVariable("m".into())

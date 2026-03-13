@@ -18,10 +18,7 @@ pub struct RebalancePlan {
 /// Compute a rebalance plan given current partitions and available nodes.
 ///
 /// Stub: returns an empty plan (no moves).
-pub fn compute_rebalance_plan(
-    _partitions: &[Partition],
-    _nodes: &[String],
-) -> RebalancePlan {
+pub fn compute_rebalance_plan(_partitions: &[Partition], _nodes: &[String]) -> RebalancePlan {
     RebalancePlan::default()
 }
 

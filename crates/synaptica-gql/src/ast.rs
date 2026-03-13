@@ -126,10 +126,7 @@ pub enum SetItem {
         value: Expression,
     },
     /// `SET v :Label`
-    Label {
-        target: Expression,
-        label: String,
-    },
+    Label { target: Expression, label: String },
     /// `SET v = expr` (replace all properties)
     AllProperties {
         target: Expression,
@@ -155,7 +152,10 @@ pub struct RemoveStatement {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RemoveItem {
     /// `REMOVE v.prop`
-    Property { target: Expression, property: String },
+    Property {
+        target: Expression,
+        property: String,
+    },
     /// `REMOVE v :Label`
     Label { target: Expression, label: String },
 }
@@ -374,10 +374,7 @@ pub enum Expression {
         property: String,
     },
     /// Function call: `name(args…)`.
-    FunctionCall {
-        name: String,
-        args: Vec<Expression>,
-    },
+    FunctionCall { name: String, args: Vec<Expression> },
     /// Binary operation: `left op right`.
     BinaryOp {
         left: Box<Expression>,
@@ -399,9 +396,7 @@ pub enum Expression {
         else_clause: Option<Box<Expression>>,
     },
     /// `EXISTS { subquery }`.
-    Exists {
-        subquery: Box<GqlStatement>,
-    },
+    Exists { subquery: Box<GqlStatement> },
     /// Aggregate function call.
     Aggregate {
         function: AggregateFunction,

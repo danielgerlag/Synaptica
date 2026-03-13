@@ -1,6 +1,7 @@
 use crate::types::Value;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use uuid::Uuid;
 
 /// Unique identifier for a graph within the database.
@@ -9,8 +10,7 @@ pub struct GraphId(pub Uuid);
 
 /// Fixed namespace UUID for deterministic graph ID generation (UUID v5).
 const GRAPH_NAMESPACE: Uuid = Uuid::from_bytes([
-    0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1,
-    0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
+    0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
 ]);
 
 impl GraphId {
@@ -39,6 +39,12 @@ impl Default for GraphId {
     }
 }
 
+impl fmt::Display for GraphId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Unique identifier for a node within a graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub Uuid);
@@ -63,7 +69,11 @@ impl Default for NodeId {
     }
 }
 
-/// Unique identifier for an edge within a graph.
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EdgeId(pub Uuid);
 
@@ -87,7 +97,11 @@ impl Default for EdgeId {
     }
 }
 
-/// A label applied to a node or edge.
+impl fmt::Display for EdgeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Label(pub String);
 
@@ -98,6 +112,16 @@ impl Label {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub fn name(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Label {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -183,12 +207,7 @@ pub struct Edge {
 }
 
 impl Edge {
-    pub fn new(
-        graph_id: GraphId,
-        source: NodeId,
-        target: NodeId,
-        label: impl Into<Label>,
-    ) -> Self {
+    pub fn new(graph_id: GraphId, source: NodeId, target: NodeId, label: impl Into<Label>) -> Self {
         Self {
             id: EdgeId::new(),
             graph_id,

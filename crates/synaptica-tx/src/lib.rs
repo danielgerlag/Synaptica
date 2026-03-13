@@ -7,15 +7,15 @@ pub mod wal;
 mod tests {
     use crate::mvcc::TransactionManager;
     use crate::transaction::TxError;
-    use synaptica_storage::engine::{StorageConfig, StorageEngine};
-    use synaptica_storage::mvcc::{MvccStore, TimestampOracle};
     use std::sync::Arc;
+    use synaptica_storage::engine::{StorageConfig, StorageEngine};
+    use synaptica_storage::mvcc::TimestampOracle;
 
     fn setup() -> (tempfile::TempDir, TransactionManager) {
         let dir = tempfile::tempdir().unwrap();
         let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
         let ts_oracle = Arc::new(TimestampOracle::new());
-        let store = Arc::new(MvccStore::new(engine.raw_db().clone(), ts_oracle.clone()));
+        let store = Arc::new(engine.create_mvcc_store(ts_oracle.clone()));
         let tm = TransactionManager::new(store, ts_oracle);
         (dir, tm)
     }
@@ -29,8 +29,14 @@ mod tests {
         tx.put("default", b"key2", b"value2").unwrap();
 
         // Read-your-own-writes
-        assert_eq!(tx.get("default", b"key1").unwrap(), Some(b"value1".to_vec()));
-        assert_eq!(tx.get("default", b"key2").unwrap(), Some(b"value2".to_vec()));
+        assert_eq!(
+            tx.get("default", b"key1").unwrap(),
+            Some(b"value1".to_vec())
+        );
+        assert_eq!(
+            tx.get("default", b"key2").unwrap(),
+            Some(b"value2".to_vec())
+        );
 
         // Not yet visible to others
         let snap = tm.snapshot();
@@ -42,7 +48,10 @@ mod tests {
 
         // Now visible
         let snap2 = tm.snapshot();
-        assert_eq!(snap2.get("default", b"key1").unwrap(), Some(b"value1".to_vec()));
+        assert_eq!(
+            snap2.get("default", b"key1").unwrap(),
+            Some(b"value1".to_vec())
+        );
     }
 
     #[test]
@@ -106,8 +115,14 @@ mod tests {
         tm.commit(&mut tx2).unwrap();
 
         let snap = tm.snapshot();
-        assert_eq!(snap.get("default", b"key1").unwrap(), Some(b"from_tx1".to_vec()));
-        assert_eq!(snap.get("default", b"key2").unwrap(), Some(b"from_tx2".to_vec()));
+        assert_eq!(
+            snap.get("default", b"key1").unwrap(),
+            Some(b"from_tx1".to_vec())
+        );
+        assert_eq!(
+            snap.get("default", b"key2").unwrap(),
+            Some(b"from_tx2".to_vec())
+        );
     }
 
     #[test]
@@ -134,7 +149,10 @@ mod tests {
 
         // Delete
         let mut tx2 = tm.begin();
-        assert_eq!(tx2.get("default", b"key1").unwrap(), Some(b"value1".to_vec()));
+        assert_eq!(
+            tx2.get("default", b"key1").unwrap(),
+            Some(b"value1".to_vec())
+        );
         tx2.delete("default", b"key1").unwrap();
         // Read-your-own-deletes
         assert_eq!(tx2.get("default", b"key1").unwrap(), None);
@@ -263,10 +281,7 @@ mod tests {
             tx.put("default", b"key2", b"val"),
             Err(TxError::NotActive)
         ));
-        assert!(matches!(
-            tx.get("default", b"key"),
-            Err(TxError::NotActive)
-        ));
+        assert!(matches!(tx.get("default", b"key"), Err(TxError::NotActive)));
     }
 
     #[test]
@@ -274,7 +289,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
         let ts_oracle = Arc::new(TimestampOracle::new());
-        let store = Arc::new(MvccStore::new(engine.raw_db().clone(), ts_oracle.clone()));
+        let store = Arc::new(engine.create_mvcc_store(ts_oracle.clone()));
         let tm = TransactionManager::new(store.clone(), ts_oracle);
 
         let mut tx1 = tm.begin();
@@ -295,10 +310,7 @@ mod tests {
 
         // Latest version still readable
         let snap = tm.snapshot();
-        assert_eq!(
-            snap.get("default", b"key").unwrap(),
-            Some(b"v3".to_vec())
-        );
+        assert_eq!(snap.get("default", b"key").unwrap(), Some(b"v3".to_vec()));
     }
 
     #[test]
@@ -349,7 +361,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let engine = StorageEngine::open(dir.path(), &StorageConfig::default()).unwrap();
         let ts_oracle = Arc::new(TimestampOracle::new());
-        let store = Arc::new(MvccStore::new(engine.raw_db().clone(), ts_oracle.clone()));
+        let store = Arc::new(engine.create_mvcc_store(ts_oracle.clone()));
         let tm = Arc::new(TransactionManager::new(store, ts_oracle));
 
         let mut tx1 = tm.begin();
@@ -372,10 +384,7 @@ mod tests {
             [r1, r2].into_iter().partition(|r| r.is_ok());
         assert_eq!(successes.len(), 1);
         assert_eq!(conflicts.len(), 1);
-        assert!(matches!(
-            conflicts[0],
-            Err(TxError::WriteConflict)
-        ));
+        assert!(matches!(conflicts[0], Err(TxError::WriteConflict)));
     }
 
     #[test]
@@ -391,9 +400,18 @@ mod tests {
 
         // All three keys must be readable at the commit timestamp
         let snap = tm.snapshot();
-        assert_eq!(snap.get("default", b"atom_k1").unwrap(), Some(b"v1".to_vec()));
-        assert_eq!(snap.get("default", b"atom_k2").unwrap(), Some(b"v2".to_vec()));
-        assert_eq!(snap.get("default", b"atom_k3").unwrap(), Some(b"v3".to_vec()));
+        assert_eq!(
+            snap.get("default", b"atom_k1").unwrap(),
+            Some(b"v1".to_vec())
+        );
+        assert_eq!(
+            snap.get("default", b"atom_k2").unwrap(),
+            Some(b"v2".to_vec())
+        );
+        assert_eq!(
+            snap.get("default", b"atom_k3").unwrap(),
+            Some(b"v3".to_vec())
+        );
         assert!(commit_ts > 0);
     }
 
@@ -417,6 +435,9 @@ mod tests {
 
         // Verify the final value is readable (system didn't OOM or break)
         let snap = tm.snapshot();
-        assert_eq!(snap.get("default", b"gc_final").unwrap(), Some(b"done".to_vec()));
+        assert_eq!(
+            snap.get("default", b"gc_final").unwrap(),
+            Some(b"done".to_vec())
+        );
     }
 }

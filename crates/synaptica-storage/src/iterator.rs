@@ -8,10 +8,9 @@ pub fn prefix_scan(
     cf_name: &str,
     prefix: &[u8],
 ) -> StorageResult<Vec<(Vec<u8>, Vec<u8>)>> {
-    let cf = engine
-        .raw_db()
-        .cf_handle(cf_name)
-        .ok_or_else(|| crate::engine::StorageError::CfNotFound(cf_name.to_string()))?;
+    let cf = engine.raw_db().cf_handle(cf_name).ok_or_else(|| {
+        crate::engine::StorageError::Internal(format!("column family not found: {}", cf_name))
+    })?;
 
     let iter = engine
         .raw_db()

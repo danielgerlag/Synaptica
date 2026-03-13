@@ -5,8 +5,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum MvccError {
-    #[error("RocksDB error: {0}")]
-    RocksDb(#[from] rocksdb::Error),
+    #[error("storage internal error: {0}")]
+    Internal(String),
 
     #[error("serialization error: {0}")]
     Serialization(String),
@@ -16,9 +16,12 @@ pub enum MvccError {
 
     #[error("key not found")]
     NotFound,
+}
 
-    #[error("column family not found: {0}")]
-    CfNotFound(String),
+impl From<rocksdb::Error> for MvccError {
+    fn from(e: rocksdb::Error) -> Self {
+        MvccError::Internal(e.to_string())
+    }
 }
 
 pub type MvccResult<T> = Result<T, MvccError>;
@@ -62,9 +65,10 @@ impl TimestampOracle {
     }
 
     /// Persist the current counter to RocksDB for crash recovery.
-    pub fn persist_to_db(&self, db: &DBWithThreadMode<MultiThreaded>) -> Result<(), rocksdb::Error> {
+    pub fn persist_to_db(&self, db: &DBWithThreadMode<MultiThreaded>) -> MvccResult<()> {
         let val = self.counter.load(Ordering::SeqCst);
-        db.put(TS_ORACLE_KEY, val.to_be_bytes())
+        db.put(TS_ORACLE_KEY, val.to_be_bytes())?;
+        Ok(())
     }
 
     pub fn next(&self) -> u64 {
@@ -96,9 +100,7 @@ pub fn decode_versioned_timestamp(versioned_key: &[u8]) -> Option<u64> {
     if versioned_key.len() < 8 {
         return None;
     }
-    let ts_bytes: [u8; 8] = versioned_key[versioned_key.len() - 8..]
-        .try_into()
-        .ok()?;
+    let ts_bytes: [u8; 8] = versioned_key[versioned_key.len() - 8..].try_into().ok()?;
     Some(!u64::from_be_bytes(ts_bytes))
 }
 
@@ -129,10 +131,7 @@ pub struct MvccStore {
 }
 
 impl MvccStore {
-    pub fn new(
-        db: Arc<DBWithThreadMode<MultiThreaded>>,
-        ts_oracle: Arc<TimestampOracle>,
-    ) -> Self {
+    pub fn new(db: Arc<DBWithThreadMode<MultiThreaded>>, ts_oracle: Arc<TimestampOracle>) -> Self {
         Self { db, ts_oracle }
     }
 
@@ -142,7 +141,7 @@ impl MvccStore {
 
     /// Persist the current timestamp counter to RocksDB for crash recovery.
     pub fn persist_timestamp(&self) -> MvccResult<()> {
-        self.ts_oracle.persist_to_db(&self.db).map_err(MvccError::RocksDb)
+        self.ts_oracle.persist_to_db(&self.db)
     }
 
     /// Write a versioned key-value pair at the given timestamp.
@@ -156,19 +155,14 @@ impl MvccStore {
         let cf = self
             .db
             .cf_handle(cf_name)
-            .ok_or_else(|| MvccError::CfNotFound(cf_name.to_string()))?;
+            .ok_or_else(|| MvccError::Internal(format!("column family not found: {}", cf_name)))?;
         let versioned = encode_versioned_key(key, timestamp);
         self.db.put_cf(&cf, &versioned, value)?;
         Ok(())
     }
 
     /// Delete a key by writing a tombstone at the given timestamp.
-    pub fn delete_at(
-        &self,
-        cf_name: &str,
-        key: &[u8],
-        timestamp: u64,
-    ) -> MvccResult<()> {
+    pub fn delete_at(&self, cf_name: &str, key: &[u8], timestamp: u64) -> MvccResult<()> {
         self.put_at(cf_name, key, TOMBSTONE, timestamp)
     }
 
@@ -182,7 +176,7 @@ impl MvccStore {
         let cf = self
             .db
             .cf_handle(cf_name)
-            .ok_or_else(|| MvccError::CfNotFound(cf_name.to_string()))?;
+            .ok_or_else(|| MvccError::Internal(format!("column family not found: {}", cf_name)))?;
 
         // Start scanning from the newest possible version of this key
         let scan_start = encode_versioned_key(key, u64::MAX);
@@ -222,7 +216,7 @@ impl MvccStore {
         let cf = self
             .db
             .cf_handle(cf_name)
-            .ok_or_else(|| MvccError::CfNotFound(cf_name.to_string()))?;
+            .ok_or_else(|| MvccError::Internal(format!("column family not found: {}", cf_name)))?;
 
         let scan_start = encode_versioned_key(prefix, u64::MAX);
         let iter = self.db.iterator_cf(
@@ -269,10 +263,9 @@ impl MvccStore {
     ) -> MvccResult<()> {
         let mut batch = WriteBatch::default();
         for (cf_name, key, value) in writes {
-            let cf = self
-                .db
-                .cf_handle(cf_name)
-                .ok_or_else(|| MvccError::CfNotFound(cf_name.to_string()))?;
+            let cf = self.db.cf_handle(cf_name).ok_or_else(|| {
+                MvccError::Internal(format!("column family not found: {}", cf_name))
+            })?;
             let versioned = encode_versioned_key(key, timestamp);
             match value {
                 Some(v) => batch.put_cf(&cf, &versioned, v),
@@ -292,10 +285,9 @@ impl MvccStore {
         let mut batch = WriteBatch::default();
 
         for (cf_name, key, value) in writes {
-            let cf = self
-                .db
-                .cf_handle(cf_name)
-                .ok_or_else(|| MvccError::CfNotFound(cf_name.to_string()))?;
+            let cf = self.db.cf_handle(cf_name).ok_or_else(|| {
+                MvccError::Internal(format!("column family not found: {}", cf_name))
+            })?;
             let versioned = encode_versioned_key(key, timestamp);
             batch.put_cf(&cf, &versioned, value);
         }
@@ -306,16 +298,11 @@ impl MvccStore {
 
     /// Garbage collect versions older than the given watermark.
     /// Only removes old versions if a newer version exists before the watermark.
-    pub fn gc_before(
-        &self,
-        cf_name: &str,
-        prefix: &[u8],
-        watermark: u64,
-    ) -> MvccResult<usize> {
+    pub fn gc_before(&self, cf_name: &str, prefix: &[u8], watermark: u64) -> MvccResult<usize> {
         let cf = self
             .db
             .cf_handle(cf_name)
-            .ok_or_else(|| MvccError::CfNotFound(cf_name.to_string()))?;
+            .ok_or_else(|| MvccError::Internal(format!("column family not found: {}", cf_name)))?;
 
         let scan_start = encode_versioned_key(prefix, u64::MAX);
         let iter = self.db.iterator_cf(
@@ -406,12 +393,30 @@ mod tests {
 
         // Read at different snapshots
         assert_eq!(store.get_at(cf, key, 5).unwrap(), None);
-        assert_eq!(store.get_at(cf, key, 10).unwrap(), Some(b"version1".to_vec()));
-        assert_eq!(store.get_at(cf, key, 15).unwrap(), Some(b"version1".to_vec()));
-        assert_eq!(store.get_at(cf, key, 20).unwrap(), Some(b"version2".to_vec()));
-        assert_eq!(store.get_at(cf, key, 25).unwrap(), Some(b"version2".to_vec()));
-        assert_eq!(store.get_at(cf, key, 30).unwrap(), Some(b"version3".to_vec()));
-        assert_eq!(store.get_at(cf, key, 100).unwrap(), Some(b"version3".to_vec()));
+        assert_eq!(
+            store.get_at(cf, key, 10).unwrap(),
+            Some(b"version1".to_vec())
+        );
+        assert_eq!(
+            store.get_at(cf, key, 15).unwrap(),
+            Some(b"version1".to_vec())
+        );
+        assert_eq!(
+            store.get_at(cf, key, 20).unwrap(),
+            Some(b"version2".to_vec())
+        );
+        assert_eq!(
+            store.get_at(cf, key, 25).unwrap(),
+            Some(b"version2".to_vec())
+        );
+        assert_eq!(
+            store.get_at(cf, key, 30).unwrap(),
+            Some(b"version3".to_vec())
+        );
+        assert_eq!(
+            store.get_at(cf, key, 100).unwrap(),
+            Some(b"version3".to_vec())
+        );
     }
 
     #[test]
@@ -428,7 +433,10 @@ mod tests {
 
         // Re-insert after delete
         store.put_at(cf, key, b"resurrected", 30).unwrap();
-        assert_eq!(store.get_at(cf, key, 35).unwrap(), Some(b"resurrected".to_vec()));
+        assert_eq!(
+            store.get_at(cf, key, 35).unwrap(),
+            Some(b"resurrected".to_vec())
+        );
     }
 
     #[test]

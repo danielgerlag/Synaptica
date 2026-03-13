@@ -73,9 +73,7 @@ pub enum LogicalPlan {
         offset: Option<u64>,
     },
     /// Remove duplicate rows.
-    Distinct {
-        input: Box<LogicalPlan>,
-    },
+    Distinct { input: Box<LogicalPlan> },
     /// Create a new node.
     CreateNode {
         labels: Vec<String>,
@@ -143,19 +141,11 @@ pub enum LogicalPlan {
         property_names: Vec<String>,
     },
     /// DDL: drop a property index.
-    DropIndex {
-        name: String,
-    },
+    DropIndex { name: String },
     /// DDL: create a new graph.
-    CreateGraph {
-        name: String,
-        if_not_exists: bool,
-    },
+    CreateGraph { name: String, if_not_exists: bool },
     /// DDL: drop a graph.
-    DropGraph {
-        name: String,
-        if_exists: bool,
-    },
+    DropGraph { name: String, if_exists: bool },
     /// DDL: list all graphs.
     ListGraphs,
 }
@@ -250,27 +240,37 @@ impl QueryPlanner {
 
                 for path in &m.pattern.paths {
                     // Check if path has edges (traversal pattern)
-                    let has_edges = path.elements.iter().any(|e| matches!(e, crate::ast::PatternElement::Edge(_)));
+                    let has_edges = path
+                        .elements
+                        .iter()
+                        .any(|e| matches!(e, crate::ast::PatternElement::Edge(_)));
 
                     if has_edges {
                         // Extract node/edge elements in order
-                        let nodes: Vec<&crate::ast::NodePattern> = path.elements.iter()
+                        let nodes: Vec<&crate::ast::NodePattern> = path
+                            .elements
+                            .iter()
                             .filter_map(|e| match e {
                                 crate::ast::PatternElement::Node(n) => Some(n),
                                 _ => None,
                             })
                             .collect();
-                        let edges: Vec<&crate::ast::EdgePattern> = path.elements.iter()
+                        let edges: Vec<&crate::ast::EdgePattern> = path
+                            .elements
+                            .iter()
                             .filter_map(|e| match e {
                                 crate::ast::PatternElement::Edge(e) => Some(e),
                                 _ => None,
                             })
                             .collect();
 
-                        let source_node = nodes.first().ok_or_else(|| PlanError::Internal("edge pattern missing source node".into()))?;
+                        let source_node = nodes.first().ok_or_else(|| {
+                            PlanError::Internal("edge pattern missing source node".into())
+                        })?;
 
                         // Start with the source node scan (or input from WITH)
-                        let mut current_plan = if input.is_some() && source_node.variable.is_some() {
+                        let mut current_plan = if input.is_some() && source_node.variable.is_some()
+                        {
                             input.clone().unwrap()
                         } else {
                             LogicalPlan::Scan {
@@ -294,7 +294,9 @@ impl QueryPlanner {
                                 input: Box::new(current_plan),
                                 edge_label: edge_pat.labels.first().cloned().unwrap_or_default(),
                                 direction: edge_pat.direction.clone(),
-                                target_labels: target_node.map(|n| n.labels.clone()).unwrap_or_default(),
+                                target_labels: target_node
+                                    .map(|n| n.labels.clone())
+                                    .unwrap_or_default(),
                                 edge_variable: edge_pat.variable.clone(),
                                 target_variable: target_node.and_then(|n| n.variable.clone()),
                             };
@@ -318,7 +320,9 @@ impl QueryPlanner {
 
                         scans.push(current_plan);
                     } else {
-                        let labels: Vec<String> = path.elements.iter()
+                        let labels: Vec<String> = path
+                            .elements
+                            .iter()
                             .filter_map(|e| match e {
                                 crate::ast::PatternElement::Node(n) => Some(n.labels.clone()),
                                 _ => None,
@@ -326,7 +330,9 @@ impl QueryPlanner {
                             .flatten()
                             .collect();
 
-                        let variable = path.elements.iter()
+                        let variable = path
+                            .elements
+                            .iter()
                             .filter_map(|e| match e {
                                 crate::ast::PatternElement::Node(n) => n.variable.clone(),
                                 _ => None,
@@ -334,7 +340,9 @@ impl QueryPlanner {
                             .next();
 
                         // Collect inline properties from node patterns
-                        let node_props: Vec<(String, Expression)> = path.elements.iter()
+                        let node_props: Vec<(String, Expression)> = path
+                            .elements
+                            .iter()
                             .filter_map(|e| match e {
                                 crate::ast::PatternElement::Node(n) => Some(n.properties.clone()),
                                 _ => None,
@@ -383,8 +391,7 @@ impl QueryPlanner {
             }
             GqlStatement::Return(r) => {
                 let base = input.unwrap_or(LogicalPlan::Empty);
-                let exprs: Vec<Expression> =
-                    r.items.iter().map(|i| i.expression.clone()).collect();
+                let exprs: Vec<Expression> = r.items.iter().map(|i| i.expression.clone()).collect();
                 let aliases: Vec<Option<String>> =
                     r.items.iter().map(|i| i.alias.clone()).collect();
 
@@ -393,11 +400,14 @@ impl QueryPlanner {
                 let mut plan = base;
 
                 if let Some(ref ob) = r.order_by {
-                    let order_exprs: Vec<(Expression, SortDirection)> =
-                        ob.items.iter().map(|i| {
+                    let order_exprs: Vec<(Expression, SortDirection)> = ob
+                        .items
+                        .iter()
+                        .map(|i| {
                             let expr = Self::resolve_order_alias(&i.expression, &exprs, &aliases);
                             (expr, i.direction.clone())
-                        }).collect();
+                        })
+                        .collect();
                     plan = LogicalPlan::Sort {
                         input: Box::new(plan),
                         order_by: order_exprs,
@@ -435,32 +445,55 @@ impl QueryPlanner {
                 Ok(plan)
             }
             GqlStatement::Insert(ins) => {
-                let has_edges = ins.patterns.iter().any(|p|
-                    p.elements.iter().any(|e| matches!(e, crate::ast::PatternElement::Edge(_)))
-                );
+                let has_edges = ins.patterns.iter().any(|p| {
+                    p.elements
+                        .iter()
+                        .any(|e| matches!(e, crate::ast::PatternElement::Edge(_)))
+                });
 
                 if has_edges && input.is_some() {
                     let base = input.unwrap();
-                    let elements: Vec<_> = ins.patterns.iter()
+                    let elements: Vec<_> = ins
+                        .patterns
+                        .iter()
                         .flat_map(|p| p.elements.iter())
                         .collect();
 
-                    let source_var = elements.iter().find_map(|e| match e {
-                        crate::ast::PatternElement::Node(n) => n.variable.clone(),
-                        _ => None,
-                    }).ok_or(PlanError::Internal("edge INSERT requires source node variable".into()))?;
+                    let source_var = elements
+                        .iter()
+                        .find_map(|e| match e {
+                            crate::ast::PatternElement::Node(n) => n.variable.clone(),
+                            _ => None,
+                        })
+                        .ok_or(PlanError::Internal(
+                            "edge INSERT requires source node variable".into(),
+                        ))?;
 
-                    let edge = elements.iter().find_map(|e| match e {
-                        crate::ast::PatternElement::Edge(ep) => Some(ep),
-                        _ => None,
-                    }).ok_or(PlanError::Internal("edge INSERT requires edge pattern".into()))?;
+                    let edge = elements
+                        .iter()
+                        .find_map(|e| match e {
+                            crate::ast::PatternElement::Edge(ep) => Some(ep),
+                            _ => None,
+                        })
+                        .ok_or(PlanError::Internal(
+                            "edge INSERT requires edge pattern".into(),
+                        ))?;
 
-                    let target_var = elements.iter().filter_map(|e| match e {
-                        crate::ast::PatternElement::Node(n) => n.variable.clone(),
-                        _ => None,
-                    }).nth(1).ok_or(PlanError::Internal("edge INSERT requires target node variable".into()))?;
+                    let target_var = elements
+                        .iter()
+                        .filter_map(|e| match e {
+                            crate::ast::PatternElement::Node(n) => n.variable.clone(),
+                            _ => None,
+                        })
+                        .nth(1)
+                        .ok_or(PlanError::Internal(
+                            "edge INSERT requires target node variable".into(),
+                        ))?;
 
-                    let label = edge.labels.first().cloned()
+                    let label = edge
+                        .labels
+                        .first()
+                        .cloned()
                         .ok_or(PlanError::Internal("edge INSERT requires a label".into()))?;
 
                     Ok(LogicalPlan::CreateEdgeFromMatch {
@@ -491,8 +524,7 @@ impl QueryPlanner {
             }
             GqlStatement::With(w) => {
                 let base = input.unwrap_or(LogicalPlan::Empty);
-                let exprs: Vec<Expression> =
-                    w.items.iter().map(|i| i.expression.clone()).collect();
+                let exprs: Vec<Expression> = w.items.iter().map(|i| i.expression.clone()).collect();
                 let aliases: Vec<Option<String>> =
                     w.items.iter().map(|i| i.alias.clone()).collect();
 
@@ -516,8 +548,11 @@ impl QueryPlanner {
                 }
 
                 if let Some(ref ob) = w.order_by {
-                    let order_exprs: Vec<(Expression, SortDirection)> =
-                        ob.items.iter().map(|i| (i.expression.clone(), i.direction.clone())).collect();
+                    let order_exprs: Vec<(Expression, SortDirection)> = ob
+                        .items
+                        .iter()
+                        .map(|i| (i.expression.clone(), i.direction.clone()))
+                        .collect();
                     plan = LogicalPlan::Sort {
                         input: Box::new(plan),
                         order_by: order_exprs,
@@ -542,25 +577,27 @@ impl QueryPlanner {
 
                 Ok(plan)
             }
-            GqlStatement::Call(c) => {
-                Ok(LogicalPlan::CallProcedure {
-                    procedure: c.procedure.clone(),
-                    arguments: c.arguments.clone(),
-                    yield_items: c.yield_items.clone(),
-                })
-            }
+            GqlStatement::Call(c) => Ok(LogicalPlan::CallProcedure {
+                procedure: c.procedure.clone(),
+                arguments: c.arguments.clone(),
+                yield_items: c.yield_items.clone(),
+            }),
             GqlStatement::Delete(d) => {
                 let base = input.ok_or(PlanError::Internal(
                     "DELETE requires a preceding MATCH".into(),
                 ))?;
                 // Extract target variable names from expressions
-                let targets: Vec<String> = d.targets.iter().filter_map(|expr| {
-                    if let Expression::Identifier(name) = expr {
-                        Some(name.clone())
-                    } else {
-                        None
-                    }
-                }).collect();
+                let targets: Vec<String> = d
+                    .targets
+                    .iter()
+                    .filter_map(|expr| {
+                        if let Expression::Identifier(name) = expr {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 Ok(LogicalPlan::DeleteNode {
                     input: Box::new(base),
                     targets,
@@ -568,13 +605,16 @@ impl QueryPlanner {
                 })
             }
             GqlStatement::Set(s) => {
-                let base = input.ok_or(PlanError::Internal(
-                    "SET requires a preceding MATCH".into(),
-                ))?;
+                let base =
+                    input.ok_or(PlanError::Internal("SET requires a preceding MATCH".into()))?;
                 let mut plan = base;
                 for item in &s.items {
                     match item {
-                        crate::ast::SetItem::Property { target, property, value } => {
+                        crate::ast::SetItem::Property {
+                            target,
+                            property,
+                            value,
+                        } => {
                             let target_name = if let Expression::Identifier(name) = target {
                                 Some(name.clone())
                             } else {
@@ -592,32 +632,24 @@ impl QueryPlanner {
                 }
                 Ok(plan)
             }
-            GqlStatement::CreateIndex(ci) => {
-                Ok(LogicalPlan::CreateIndex {
-                    name: ci.name.clone(),
-                    unique: ci.unique,
-                    entity_type: ci.entity_type.clone(),
-                    label: ci.label.clone(),
-                    property_names: ci.property_names.clone(),
-                })
-            }
-            GqlStatement::DropIndex(di) => {
-                Ok(LogicalPlan::DropIndex {
-                    name: di.name.clone(),
-                })
-            }
-            GqlStatement::CreateGraph(cg) => {
-                Ok(LogicalPlan::CreateGraph {
-                    name: cg.name.clone(),
-                    if_not_exists: cg.if_not_exists,
-                })
-            }
-            GqlStatement::DropGraph(dg) => {
-                Ok(LogicalPlan::DropGraph {
-                    name: dg.name.clone(),
-                    if_exists: dg.if_exists,
-                })
-            }
+            GqlStatement::CreateIndex(ci) => Ok(LogicalPlan::CreateIndex {
+                name: ci.name.clone(),
+                unique: ci.unique,
+                entity_type: ci.entity_type.clone(),
+                label: ci.label.clone(),
+                property_names: ci.property_names.clone(),
+            }),
+            GqlStatement::DropIndex(di) => Ok(LogicalPlan::DropIndex {
+                name: di.name.clone(),
+            }),
+            GqlStatement::CreateGraph(cg) => Ok(LogicalPlan::CreateGraph {
+                name: cg.name.clone(),
+                if_not_exists: cg.if_not_exists,
+            }),
+            GqlStatement::DropGraph(dg) => Ok(LogicalPlan::DropGraph {
+                name: dg.name.clone(),
+                if_exists: dg.if_exists,
+            }),
             GqlStatement::ListGraphs => Ok(LogicalPlan::ListGraphs),
             _ => Err(PlanError::UnsupportedStatement),
         }
@@ -638,11 +670,7 @@ mod tests {
     #[test]
     fn empty_program_produces_empty_plan() {
         let planner = QueryPlanner::new();
-        let plan = planner
-            .plan(&GqlProgram {
-                statements: vec![],
-            })
-            .unwrap();
+        let plan = planner.plan(&GqlProgram { statements: vec![] }).unwrap();
         assert_eq!(plan, LogicalPlan::Empty);
     }
 }

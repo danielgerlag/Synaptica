@@ -107,7 +107,11 @@ async fn match_with_where_filter_on_follower() {
             "MATCH (n:Person) WHERE n.age > 28 RETURN n.name ORDER BY n.name",
         )
         .unwrap();
-    assert_eq!(rs.records.len(), 2, "should match Alice (30) and Charlie (35)");
+    assert_eq!(
+        rs.records.len(),
+        2,
+        "should match Alice (30) and Charlie (35)"
+    );
     assert_eq!(
         rs.records[0].get("n.name"),
         Some(&Value::String("Alice".into()))
@@ -145,7 +149,11 @@ async fn match_with_order_by_and_limit_on_follower() {
         )
         .unwrap();
 
-    assert_eq!(rs.records.len(), 5, "LIMIT 5 should return exactly 5 records");
+    assert_eq!(
+        rs.records.len(),
+        5,
+        "LIMIT 5 should return exactly 5 records"
+    );
     for (i, rec) in rs.records.iter().enumerate() {
         let expected = format!("item_{:02}", i);
         assert_eq!(
@@ -287,8 +295,6 @@ async fn label_query_on_follower_matches_leader() {
 #[tokio::test]
 async fn index_backed_scan_on_follower() {
     use synaptica_core::graph::GraphId;
-    use synaptica_storage::index::IndexManager;
-
     let cluster = TestCluster::new(3).await;
 
     cluster
@@ -310,9 +316,8 @@ async fn index_backed_scan_on_follower() {
 
     // Verify index definition replicated to follower
     let follower_node = cluster.nodes.get(&follower).unwrap();
-    let idx_mgr = IndexManager::new(follower_node.storage.raw_db().clone());
     let graph_id = GraphId::from_name("test");
-    let indexes = idx_mgr.list_indexes(&graph_id).unwrap();
+    let indexes = follower_node.storage.list_indexes(&graph_id).unwrap();
     assert!(
         indexes.iter().any(|idx| idx.name == "idx_person_name"),
         "index must be replicated to follower, found: {:?}",

@@ -58,8 +58,7 @@ impl InMemoryCatalog {
     /// Register a graph with the given name and id.
     pub fn add_graph(&mut self, name: impl Into<String>, id: GraphId) {
         let name = name.into();
-        self.graphs
-            .insert(name.clone(), GraphMeta { id, name });
+        self.graphs.insert(name.clone(), GraphMeta { id, name });
     }
 
     /// Register labels for a graph.

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ProtocolVersion, ServerCapabilities, ServerInfo};
-use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use rmcp::schemars;
+use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use serde::Deserialize;
 
 use crate::backend::SynapticaBackend;
@@ -94,10 +94,7 @@ impl SynapticaMcpServer {
     /// Get the graph schema — lists all node and edge labels with their property keys and counts.
     /// Use this to understand the structure of data in the database before writing queries.
     #[tool(name = "get_schema")]
-    async fn get_schema(
-        &self,
-        Parameters(params): Parameters<GraphParams>,
-    ) -> String {
+    async fn get_schema(&self, Parameters(params): Parameters<GraphParams>) -> String {
         let graph = params.graph.unwrap_or_default();
         match self.backend.get_schema(&graph).await {
             Ok(schema) => {
@@ -149,10 +146,7 @@ impl SynapticaMcpServer {
 
     /// List all node and edge labels in the graph with their counts.
     #[tool(name = "list_labels")]
-    async fn list_labels(
-        &self,
-        Parameters(params): Parameters<GraphParams>,
-    ) -> String {
+    async fn list_labels(&self, Parameters(params): Parameters<GraphParams>) -> String {
         let graph = params.graph.unwrap_or_default();
         match self.backend.list_labels(&graph).await {
             Ok(labels) => {
@@ -171,10 +165,7 @@ impl SynapticaMcpServer {
 
     /// List all secondary property indexes in the graph.
     #[tool(name = "list_indexes")]
-    async fn list_indexes(
-        &self,
-        Parameters(params): Parameters<GraphParams>,
-    ) -> String {
+    async fn list_indexes(&self, Parameters(params): Parameters<GraphParams>) -> String {
         let graph = params.graph.unwrap_or_default();
         match self.backend.list_indexes(&graph).await {
             Ok(indexes) => {
@@ -193,10 +184,7 @@ impl SynapticaMcpServer {
 
     /// Create a secondary property index on a node label and property for faster lookups.
     #[tool(name = "create_index")]
-    async fn create_index(
-        &self,
-        Parameters(params): Parameters<IndexParams>,
-    ) -> String {
+    async fn create_index(&self, Parameters(params): Parameters<IndexParams>) -> String {
         let graph = params.graph.unwrap_or_default();
         match self
             .backend
@@ -210,10 +198,7 @@ impl SynapticaMcpServer {
 
     /// Drop a secondary property index.
     #[tool(name = "drop_index")]
-    async fn drop_index(
-        &self,
-        Parameters(params): Parameters<IndexParams>,
-    ) -> String {
+    async fn drop_index(&self, Parameters(params): Parameters<IndexParams>) -> String {
         let graph = params.graph.unwrap_or_default();
         match self
             .backend
@@ -245,10 +230,7 @@ impl SynapticaMcpServer {
                     info.node_id, info.role, info.leader_id
                 );
                 for n in &info.nodes {
-                    out.push_str(&format!(
-                        "  {} — {} ({})\n",
-                        n.node_id, n.address, n.role
-                    ));
+                    out.push_str(&format!("  {} — {} ({})\n", n.node_id, n.address, n.role));
                 }
                 out
             }
@@ -278,10 +260,7 @@ impl SynapticaMcpServer {
     /// Create a new named graph in the database.
     /// Use this to create isolated graph spaces for different datasets.
     #[tool(name = "create_graph")]
-    async fn create_graph(
-        &self,
-        Parameters(params): Parameters<CreateGraphParams>,
-    ) -> String {
+    async fn create_graph(&self, Parameters(params): Parameters<CreateGraphParams>) -> String {
         let query = format!("CREATE GRAPH {}", params.name);
         match self.backend.execute_query(&query, "").await {
             Ok(result) => {
@@ -298,10 +277,7 @@ impl SynapticaMcpServer {
     /// Create a point-in-time backup of the entire database.
     /// The backup is a RocksDB checkpoint — near-instant, consistent snapshot.
     #[tool(name = "create_backup")]
-    async fn create_backup(
-        &self,
-        Parameters(params): Parameters<BackupParams>,
-    ) -> String {
+    async fn create_backup(&self, Parameters(params): Parameters<BackupParams>) -> String {
         let label = params.label.unwrap_or_else(|| "manual".to_string());
         match self.backend.create_backup(&label).await {
             Ok(msg) => msg,
@@ -332,10 +308,7 @@ impl SynapticaMcpServer {
 
     /// Delete a specific backup by name.
     #[tool(name = "delete_backup")]
-    async fn delete_backup(
-        &self,
-        Parameters(params): Parameters<DeleteBackupParams>,
-    ) -> String {
+    async fn delete_backup(&self, Parameters(params): Parameters<DeleteBackupParams>) -> String {
         match self.backend.delete_backup(&params.name).await {
             Ok(msg) => msg,
             Err(e) => format!("Error: {}", e),
@@ -358,9 +331,7 @@ impl ServerHandler for SynapticaMcpServer {
              and pass the 'graph' parameter to any tool to target a specific graph."
                 .to_string(),
         );
-        info.capabilities = ServerCapabilities::builder()
-            .enable_tools()
-            .build();
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info
     }
 }

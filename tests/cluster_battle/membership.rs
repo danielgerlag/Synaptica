@@ -22,7 +22,10 @@ async fn test_31_add_learner_to_running_cluster() {
     cluster.add_learner(4).await;
 
     // The new node must exist in the cluster
-    assert!(cluster.nodes.contains_key(&4), "node 4 must be in the cluster");
+    assert!(
+        cluster.nodes.contains_key(&4),
+        "node 4 must be in the cluster"
+    );
 
     // Verify learner is tracked in membership (learners appear in metrics)
     let leader = cluster.get_leader().expect("must have leader");
@@ -35,7 +38,10 @@ async fn test_31_add_learner_to_running_cluster() {
     }
 
     // Write data and verify learner receives it
-    cluster.write("INSERT (:Person {name: 'Learner'})").await.unwrap();
+    cluster
+        .write("INSERT (:Person {name: 'Learner'})")
+        .await
+        .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     let count = cluster.count_nodes_on(4);
     assert!(count >= 1, "learner should replicate data, got {count}");
@@ -65,7 +71,10 @@ async fn test_32_promote_learner_to_voter() {
         .first()
         .cloned()
         .unwrap_or_default();
-    assert!(voters.contains(&4), "node 4 must be a voter after promotion");
+    assert!(
+        voters.contains(&4),
+        "node 4 must be a voter after promotion"
+    );
     assert_eq!(voters.len(), 4, "should have 4 voters");
 
     // Verify writes still work after membership change
@@ -122,7 +131,10 @@ async fn test_34_add_two_learners_simultaneously() {
     assert!(cluster.nodes.contains_key(&5), "node 5 must exist");
 
     // Both learners should replicate data
-    cluster.write("INSERT (:Animal {name: 'cat'})").await.unwrap();
+    cluster
+        .write("INSERT (:Animal {name: 'cat'})")
+        .await
+        .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     let c4 = cluster.count_nodes_on(4);
@@ -151,14 +163,11 @@ async fn test_35_membership_change_fails_without_leader() {
     // Attempting change_membership should fail because there is no reachable leader.
     // We use timeout to prevent hanging forever.
     let new_voters: BTreeSet<NodeId> = [1, 2, 3].into_iter().collect();
-    let result = tokio::time::timeout(
-        tokio::time::Duration::from_millis(3000),
-        async {
-            // Drive the raft directly to demonstrate the error
-            let node = cluster.nodes.get(&1).unwrap();
-            node.raft.change_membership(new_voters, false).await
-        },
-    )
+    let result = tokio::time::timeout(tokio::time::Duration::from_millis(3000), async {
+        // Drive the raft directly to demonstrate the error
+        let node = cluster.nodes.get(&1).unwrap();
+        node.raft.change_membership(new_voters, false).await
+    })
     .await;
 
     match result {
@@ -224,7 +233,9 @@ async fn test_37_downsize_5_to_3_voters() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-    let leader = cluster.get_leader().expect("must still have leader after downsizing");
+    let leader = cluster
+        .get_leader()
+        .expect("must still have leader after downsizing");
     let voters = cluster
         .metrics(leader)
         .membership_config
@@ -268,11 +279,17 @@ async fn test_38_add_duplicate_learner_graceful() {
         .await;
 
     // openraft handles duplicate add_learner gracefully (succeeds or returns Ok)
-    assert!(result.is_ok(), "duplicate add_learner should not error: {result:?}");
+    assert!(
+        result.is_ok(),
+        "duplicate add_learner should not error: {result:?}"
+    );
 
     // Cluster should still work
     let res = cluster.write("INSERT (:Item {name: 'dup'})").await;
-    assert!(res.is_ok(), "writes must still work after duplicate add_learner");
+    assert!(
+        res.is_ok(),
+        "writes must still work after duplicate add_learner"
+    );
 
     cluster.shutdown().await;
 }
@@ -297,7 +314,10 @@ async fn test_39_membership_change_unknown_node_fails() {
 
     // Original membership unaffected; writes still work
     let res = cluster.write("INSERT (:Mineral {name: 'quartz'})").await;
-    assert!(res.is_ok(), "writes must succeed after failed membership change");
+    assert!(
+        res.is_ok(),
+        "writes must succeed after failed membership change"
+    );
 
     cluster.shutdown().await;
 }
@@ -377,7 +397,11 @@ async fn test_41_promoted_voter_participates_in_elections() {
     assert!(new_leader.is_some(), "new leader must be elected");
     // The promoted node 4 is eligible — it may or may not win, but the election
     // must succeed proving it participates.
-    assert_ne!(new_leader.unwrap(), old_leader, "new leader must differ from old");
+    assert_ne!(
+        new_leader.unwrap(),
+        old_leader,
+        "new leader must differ from old"
+    );
 
     cluster.router.unblock_node(old_leader).await;
     cluster.shutdown().await;
@@ -391,7 +415,10 @@ async fn test_42_removed_voter_stops_receiving_entries() {
     let cluster = TestCluster::new(5).await;
 
     // Write initial data so we have a baseline
-    cluster.write("INSERT (:Base {name: 'baseline'})").await.unwrap();
+    cluster
+        .write("INSERT (:Base {name: 'baseline'})")
+        .await
+        .unwrap();
     cluster.wait_for_convergence(5000).await;
 
     let initial_count = cluster.count_nodes_on(5);
@@ -403,8 +430,14 @@ async fn test_42_removed_voter_stops_receiving_entries() {
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Write more data AFTER removing node 5
-    cluster.write("INSERT (:Post {name: 'afterRemoval1'})").await.unwrap();
-    cluster.write("INSERT (:Post {name: 'afterRemoval2'})").await.unwrap();
+    cluster
+        .write("INSERT (:Post {name: 'afterRemoval1'})")
+        .await
+        .unwrap();
+    cluster
+        .write("INSERT (:Post {name: 'afterRemoval2'})")
+        .await
+        .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Voters should have more data
@@ -431,11 +464,17 @@ async fn test_43_learner_receives_data_but_not_elected() {
     cluster.add_learner(4).await;
 
     // Write data and verify learner receives it
-    cluster.write("INSERT (:Food {name: 'bread'})").await.unwrap();
+    cluster
+        .write("INSERT (:Food {name: 'bread'})")
+        .await
+        .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     let learner_count = cluster.count_nodes_on(4);
-    assert!(learner_count >= 1, "learner must receive replicated data, got {learner_count}");
+    assert!(
+        learner_count >= 1,
+        "learner must receive replicated data, got {learner_count}"
+    );
 
     // Block current leader to force re-election among voters only
     let old_leader = cluster.get_leader().expect("must have leader");
@@ -459,7 +498,10 @@ async fn test_43_learner_receives_data_but_not_elected() {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 
-    assert!(new_leader.is_some(), "new leader must be elected among voters");
+    assert!(
+        new_leader.is_some(),
+        "new leader must be elected among voters"
+    );
     assert_ne!(
         new_leader.unwrap(),
         4,
@@ -468,7 +510,11 @@ async fn test_43_learner_receives_data_but_not_elected() {
 
     // Verify node 4 is not in Leader state
     let m4 = cluster.metrics(4);
-    assert_ne!(m4.state, ServerState::Leader, "learner must not be in Leader state");
+    assert_ne!(
+        m4.state,
+        ServerState::Leader,
+        "learner must not be in Leader state"
+    );
 
     cluster.router.unblock_node(old_leader).await;
     cluster.shutdown().await;
@@ -492,7 +538,10 @@ async fn test_44_membership_persisted_in_metrics() {
         .cloned()
         .unwrap_or_default();
     let expected_initial: BTreeSet<NodeId> = [1, 2, 3].into_iter().collect();
-    assert_eq!(initial_voters, expected_initial, "initial membership must be {{1,2,3}}");
+    assert_eq!(
+        initial_voters, expected_initial,
+        "initial membership must be {{1,2,3}}"
+    );
 
     // Change membership to include a new voter
     cluster.add_learner(4).await;

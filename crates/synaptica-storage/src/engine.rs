@@ -1,19 +1,21 @@
 use crate::cf::ColumnFamilies;
 use crate::encoding;
+use crate::index::{IndexDefinition, IndexManager};
+use crate::mvcc::{MvccStore, TimestampOracle};
 use rocksdb::{
     checkpoint::Checkpoint, BoundColumnFamily, DBWithThreadMode, MultiThreaded, Options, WriteBatch,
 };
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
-use synaptica_core::graph::{Edge, GraphId, GraphMeta, Label, Node};
+use synaptica_core::graph::{Edge, GraphId, GraphMeta, Label, Node, NodeId};
 use synaptica_core::types::Value;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum StorageError {
-    #[error("RocksDB error: {0}")]
-    RocksDb(#[from] rocksdb::Error),
+    #[error("storage internal error: {0}")]
+    Internal(String),
 
     #[error("serialization error: {0}")]
     Serialization(String),
@@ -23,9 +25,6 @@ pub enum StorageError {
 
     #[error("not found: {0}")]
     NotFound(String),
-
-    #[error("column family not found: {0}")]
-    CfNotFound(String),
 
     #[error("unique constraint violation: {0}")]
     UniqueViolation(String),
@@ -37,33 +36,94 @@ pub enum StorageError {
     Backup(String),
 }
 
+impl From<rocksdb::Error> for StorageError {
+    fn from(e: rocksdb::Error) -> Self {
+        StorageError::Internal(e.to_string())
+    }
+}
+
 pub type StorageResult<T> = Result<T, StorageError>;
+
+/// Performance profile presets for the storage engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerformanceProfile {
+    /// Balanced defaults suitable for most workloads.
+    Default,
+    /// Optimized for write-heavy workloads (larger buffers, more parallelism).
+    HighWrite,
+    /// Optimized for read-heavy workloads (larger cache, bloom filters).
+    HighRead,
+    /// Reduced memory footprint for constrained environments.
+    LowMemory,
+}
 
 /// Configuration for the storage engine.
 #[derive(Debug, Clone)]
 pub struct StorageConfig {
-    pub max_open_files: i32,
-    pub write_buffer_size: usize,
-    pub max_write_buffer_number: i32,
-    pub target_file_size_base: u64,
-    pub max_bytes_for_level_base: u64,
-    pub bloom_filter_bits: i32,
-    pub block_cache_size: usize,
-    pub compression_enabled: bool,
+    /// Memory allocated for block cache in megabytes (default: 512).
+    pub cache_size_mb: usize,
+    /// Enable data compression (default: true).
+    pub compression: bool,
+    /// Performance tuning profile (default: Default).
+    pub profile: PerformanceProfile,
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            max_open_files: 10_000,
-            write_buffer_size: 64 * 1024 * 1024,      // 64MB
-            max_write_buffer_number: 3,
-            target_file_size_base: 64 * 1024 * 1024,   // 64MB
-            max_bytes_for_level_base: 256 * 1024 * 1024, // 256MB
-            bloom_filter_bits: 10,
-            block_cache_size: 512 * 1024 * 1024,       // 512MB
-            compression_enabled: true,
+            cache_size_mb: 512,
+            compression: true,
+            profile: PerformanceProfile::Default,
         }
+    }
+}
+
+impl StorageConfig {
+    fn to_rocksdb_options(&self) -> Options {
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+        opts.increase_parallelism(num_cpus());
+        opts.set_allow_concurrent_memtable_write(true);
+        opts.set_enable_pipelined_write(true);
+
+        if self.compression {
+            opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
+        }
+
+        match self.profile {
+            PerformanceProfile::Default => {
+                opts.set_max_open_files(10_000);
+                opts.set_write_buffer_size(64 * 1024 * 1024);
+                opts.set_max_write_buffer_number(3);
+                opts.set_target_file_size_base(64 * 1024 * 1024);
+                opts.set_max_bytes_for_level_base(256 * 1024 * 1024);
+            }
+            PerformanceProfile::HighWrite => {
+                opts.set_max_open_files(10_000);
+                opts.set_write_buffer_size(128 * 1024 * 1024);
+                opts.set_max_write_buffer_number(5);
+                opts.set_target_file_size_base(128 * 1024 * 1024);
+                opts.set_max_bytes_for_level_base(512 * 1024 * 1024);
+            }
+            PerformanceProfile::HighRead => {
+                opts.set_max_open_files(10_000);
+                opts.set_write_buffer_size(64 * 1024 * 1024);
+                opts.set_max_write_buffer_number(3);
+                opts.set_target_file_size_base(64 * 1024 * 1024);
+                opts.set_max_bytes_for_level_base(256 * 1024 * 1024);
+                opts.set_bloom_locality(10);
+            }
+            PerformanceProfile::LowMemory => {
+                opts.set_max_open_files(1_000);
+                opts.set_write_buffer_size(16 * 1024 * 1024);
+                opts.set_max_write_buffer_number(2);
+                opts.set_target_file_size_base(32 * 1024 * 1024);
+                opts.set_max_bytes_for_level_base(128 * 1024 * 1024);
+            }
+        }
+
+        opts
     }
 }
 
@@ -75,43 +135,141 @@ pub struct StorageEngine {
 impl StorageEngine {
     /// Open or create a storage engine at the given path.
     pub fn open(path: impl AsRef<Path>, config: &StorageConfig) -> StorageResult<Self> {
-        let mut opts = Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
-        opts.set_max_open_files(config.max_open_files);
-        opts.set_write_buffer_size(config.write_buffer_size);
-        opts.set_max_write_buffer_number(config.max_write_buffer_number);
-        opts.set_target_file_size_base(config.target_file_size_base);
-        opts.set_max_bytes_for_level_base(config.max_bytes_for_level_base);
-        opts.increase_parallelism(num_cpus());
-        opts.set_allow_concurrent_memtable_write(true);
-        opts.set_enable_pipelined_write(true);
-
-        if config.compression_enabled {
-            opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
-        }
-
+        let opts = config.to_rocksdb_options();
         let cf_names = ColumnFamilies::all();
         let db = DBWithThreadMode::<MultiThreaded>::open_cf(&opts, path, cf_names)?;
 
         Ok(Self { db: Arc::new(db) })
     }
 
+    // Index operations (delegated to IndexManager)
+    pub fn create_index(&self, def: &IndexDefinition) -> StorageResult<()> {
+        let mgr = IndexManager::new(self.db.clone());
+        mgr.create_index(def)
+    }
+
+    pub fn drop_index(&self, graph_id: &GraphId, name: &str) -> StorageResult<()> {
+        let mgr = IndexManager::new(self.db.clone());
+        mgr.drop_index(graph_id, name)
+    }
+
+    pub fn list_indexes(&self, graph_id: &GraphId) -> StorageResult<Vec<IndexDefinition>> {
+        let mgr = IndexManager::new(self.db.clone());
+        mgr.list_indexes(graph_id)
+    }
+
+    pub fn lookup_index(
+        &self,
+        def: &IndexDefinition,
+        values: &[Value],
+    ) -> StorageResult<Vec<NodeId>> {
+        let mgr = IndexManager::new(self.db.clone());
+        mgr.lookup(def, values)
+    }
+
+    pub fn range_scan_index(
+        &self,
+        def: &IndexDefinition,
+        start: &Value,
+        end: &Value,
+    ) -> StorageResult<Vec<NodeId>> {
+        let mgr = IndexManager::new(self.db.clone());
+        mgr.range_scan(def, start, end)
+    }
+
+    pub fn index_node(&self, def: &IndexDefinition, node: &Node) -> StorageResult<()> {
+        let mgr = IndexManager::new(self.db.clone());
+        mgr.index_node(def, node)
+    }
+
+    pub fn unindex_node(&self, def: &IndexDefinition, node: &Node) -> StorageResult<()> {
+        let mgr = IndexManager::new(self.db.clone());
+        mgr.unindex_node(def, node)
+    }
+
     /// Get a handle to a column family.
     fn cf(&self, name: &str) -> StorageResult<Arc<BoundColumnFamily<'_>>> {
         self.db
             .cf_handle(name)
-            .ok_or_else(|| StorageError::CfNotFound(name.to_string()))
+            .ok_or_else(|| StorageError::Internal(format!("column family not found: {}", name)))
     }
 
     /// Get the underlying RocksDB instance (for advanced usage / transactions).
-    pub fn raw_db(&self) -> &Arc<DBWithThreadMode<MultiThreaded>> {
+    pub(crate) fn raw_db(&self) -> &Arc<DBWithThreadMode<MultiThreaded>> {
         &self.db
     }
 
+    // Raft storage helpers — thin wrappers over column family operations for the cluster crate.
+    pub fn raft_meta_get(&self, key: &[u8]) -> StorageResult<Option<Vec<u8>>> {
+        let cf = self.cf(ColumnFamilies::RAFT_META)?;
+        Ok(self.db.get_cf(&cf, key)?)
+    }
+
+    pub fn raft_meta_put(&self, key: &[u8], value: &[u8]) -> StorageResult<()> {
+        let cf = self.cf(ColumnFamilies::RAFT_META)?;
+        self.db.put_cf(&cf, key, value)?;
+        Ok(())
+    }
+
+    pub fn raft_meta_delete(&self, key: &[u8]) -> StorageResult<()> {
+        let cf = self.cf(ColumnFamilies::RAFT_META)?;
+        self.db.delete_cf(&cf, key)?;
+        Ok(())
+    }
+
+    pub fn raft_log_put(&self, key: &[u8], value: &[u8]) -> StorageResult<()> {
+        let cf = self.cf(ColumnFamilies::RAFT_LOG)?;
+        self.db.put_cf(&cf, key, value)?;
+        Ok(())
+    }
+
+    pub fn raft_log_delete(&self, key: &[u8]) -> StorageResult<()> {
+        let cf = self.cf(ColumnFamilies::RAFT_LOG)?;
+        self.db.delete_cf(&cf, key)?;
+        Ok(())
+    }
+
+    pub fn raft_log_get(&self, key: &[u8]) -> StorageResult<Option<Vec<u8>>> {
+        let cf = self.cf(ColumnFamilies::RAFT_LOG)?;
+        Ok(self.db.get_cf(&cf, key)?)
+    }
+
+    /// Iterate raft log entries starting from `start_key` in forward direction.
+    pub fn raft_log_scan_from(&self, start_key: &[u8]) -> StorageResult<Vec<(Vec<u8>, Vec<u8>)>> {
+        let cf = self.cf(ColumnFamilies::RAFT_LOG)?;
+        let iter = self.db.iterator_cf(
+            &cf,
+            rocksdb::IteratorMode::From(start_key, rocksdb::Direction::Forward),
+        );
+        let mut results = Vec::new();
+        for item in iter {
+            let (key, value) = item?;
+            results.push((key.to_vec(), value.to_vec()));
+        }
+        Ok(results)
+    }
+
+    /// Get the last value in the raft log by seeking to the end.
+    pub fn raft_log_last(&self) -> StorageResult<Option<Vec<u8>>> {
+        let cf = self.cf(ColumnFamilies::RAFT_LOG)?;
+        let mut iter = self.db.raw_iterator_cf(&cf);
+        iter.seek_to_last();
+        if iter.valid() {
+            if let Some(value) = iter.value() {
+                return Ok(Some(value.to_vec()));
+            }
+        }
+        Ok(None)
+    }
+
     /// Load a TimestampOracle from the persisted counter in this database.
-    pub fn load_timestamp_oracle(&self) -> crate::mvcc::TimestampOracle {
-        crate::mvcc::TimestampOracle::load_from_db(&self.db)
+    pub fn load_timestamp_oracle(&self) -> TimestampOracle {
+        TimestampOracle::load_from_db(&self.db)
+    }
+
+    /// Create an MVCC store backed by this engine's database.
+    pub fn create_mvcc_store(&self, ts_oracle: Arc<TimestampOracle>) -> MvccStore {
+        MvccStore::new(self.db.clone(), ts_oracle)
     }
 
     // --- Graph Metadata ---
@@ -120,8 +278,7 @@ impl StorageEngine {
     pub fn put_graph_meta(&self, meta: &GraphMeta) -> StorageResult<()> {
         let cf = self.cf(ColumnFamilies::GRAPH_META)?;
         let key = encoding::encode_graph_meta_key(&meta.id);
-        let value =
-            encoding::serialize_value(meta).map_err(StorageError::Serialization)?;
+        let value = encoding::serialize_value(meta).map_err(StorageError::Serialization)?;
         self.db.put_cf(&cf, &key, &value)?;
         Ok(())
     }
@@ -133,7 +290,7 @@ impl StorageEngine {
         let value = self
             .db
             .get_cf(&cf, &key)?
-            .ok_or_else(|| StorageError::NotFound(format!("graph {}", graph_id.0)))?;
+            .ok_or_else(|| StorageError::NotFound(format!("graph {}", graph_id)))?;
         encoding::deserialize_value(&value).map_err(StorageError::Deserialization)
     }
 
@@ -231,10 +388,10 @@ impl StorageEngine {
             let labels: String = node
                 .labels
                 .iter()
-                .map(|l| format!(":{}", l.0))
+                .map(|l| format!(":{}", l))
                 .collect::<String>();
             let mut props = node.properties.clone();
-            props.insert("_id".to_string(), Value::String(node.id.0.to_string()));
+            props.insert("_id".to_string(), Value::String(node.id.to_string()));
             let props_str = format_properties_for_export(&props);
             writeln!(writer, "INSERT ({} {})", labels, props_str)?;
             count += 1;
@@ -251,9 +408,9 @@ impl StorageEngine {
             writeln!(
                 writer,
                 "MATCH (a {{_id: '{src}'}}), (b {{_id: '{tgt}'}}) INSERT (a)-[:{label}{props}]->(b)",
-                src = edge.source.0,
-                tgt = edge.target.0,
-                label = edge.label.0,
+                src = edge.source.to_string(),
+                tgt = edge.target.to_string(),
+                label = edge.label.name(),
                 props = props_str,
             )?;
             count += 1;
@@ -273,25 +430,24 @@ impl StorageEngine {
         // Clean up old label indexes if node already exists with different labels
         let key = encoding::encode_node_key(&node.graph_id, &node.id);
         if let Some(old_data) = self.db.get_cf(&nodes_cf, &key)? {
-            let old_node: Node = encoding::deserialize_value(&old_data)
-                .map_err(StorageError::Deserialization)?;
+            let old_node: Node =
+                encoding::deserialize_value(&old_data).map_err(StorageError::Deserialization)?;
             for old_label in &old_node.labels {
                 if !node.labels.contains(old_label) {
-                    let label_key = encoding::encode_node_label_key(&node.graph_id, old_label, &node.id);
+                    let label_key =
+                        encoding::encode_node_label_key(&node.graph_id, old_label, &node.id);
                     batch.delete_cf(&node_labels_cf, &label_key);
                 }
             }
         }
 
         // Store node data
-        let value =
-            encoding::serialize_value(node).map_err(StorageError::Serialization)?;
+        let value = encoding::serialize_value(node).map_err(StorageError::Serialization)?;
         batch.put_cf(&nodes_cf, &key, &value);
 
         // Index current labels
         for label in &node.labels {
-            let label_key =
-                encoding::encode_node_label_key(&node.graph_id, label, &node.id);
+            let label_key = encoding::encode_node_label_key(&node.graph_id, label, &node.id);
             batch.put_cf(&node_labels_cf, &label_key, &[]);
         }
 
@@ -300,18 +456,26 @@ impl StorageEngine {
     }
 
     /// Get a node by ID.
-    pub fn get_node(&self, graph_id: &GraphId, node_id: &synaptica_core::graph::NodeId) -> StorageResult<Node> {
+    pub fn get_node(
+        &self,
+        graph_id: &GraphId,
+        node_id: &synaptica_core::graph::NodeId,
+    ) -> StorageResult<Node> {
         let cf = self.cf(ColumnFamilies::NODES)?;
         let key = encoding::encode_node_key(graph_id, node_id);
         let value = self
             .db
             .get_cf(&cf, &key)?
-            .ok_or_else(|| StorageError::NotFound(format!("node {}", node_id.0)))?;
+            .ok_or_else(|| StorageError::NotFound(format!("node {}", node_id)))?;
         encoding::deserialize_value(&value).map_err(StorageError::Deserialization)
     }
 
     /// Delete a node, its label indexes, and all connected edges.
-    pub fn delete_node(&self, graph_id: &GraphId, node_id: &synaptica_core::graph::NodeId) -> StorageResult<()> {
+    pub fn delete_node(
+        &self,
+        graph_id: &GraphId,
+        node_id: &synaptica_core::graph::NodeId,
+    ) -> StorageResult<()> {
         // First get the node to know its labels
         let node = self.get_node(graph_id, node_id)?;
 
@@ -454,44 +618,48 @@ impl StorageEngine {
         // Clean up old indexes if edge already exists with different source/target/label
         let key = encoding::encode_edge_key(&edge.graph_id, &edge.id);
         if let Some(old_data) = self.db.get_cf(&edges_cf, &key)? {
-            let old_edge: Edge = encoding::deserialize_value(&old_data)
-                .map_err(StorageError::Deserialization)?;
-            if old_edge.source != edge.source || old_edge.target != edge.target || old_edge.label != edge.label {
-                let old_adj_out = encoding::encode_adj_out_key(&edge.graph_id, &old_edge.source, &old_edge.label, &edge.id);
+            let old_edge: Edge =
+                encoding::deserialize_value(&old_data).map_err(StorageError::Deserialization)?;
+            if old_edge.source != edge.source
+                || old_edge.target != edge.target
+                || old_edge.label != edge.label
+            {
+                let old_adj_out = encoding::encode_adj_out_key(
+                    &edge.graph_id,
+                    &old_edge.source,
+                    &old_edge.label,
+                    &edge.id,
+                );
                 batch.delete_cf(&adj_out_cf, &old_adj_out);
-                let old_adj_in = encoding::encode_adj_in_key(&edge.graph_id, &old_edge.target, &old_edge.label, &edge.id);
+                let old_adj_in = encoding::encode_adj_in_key(
+                    &edge.graph_id,
+                    &old_edge.target,
+                    &old_edge.label,
+                    &edge.id,
+                );
                 batch.delete_cf(&adj_in_cf, &old_adj_in);
-                let old_label_key = encoding::encode_edge_label_key(&edge.graph_id, &old_edge.label, &edge.id);
+                let old_label_key =
+                    encoding::encode_edge_label_key(&edge.graph_id, &old_edge.label, &edge.id);
                 batch.delete_cf(&edge_labels_cf, &old_label_key);
             }
         }
 
         // Store edge data
-        let value =
-            encoding::serialize_value(edge).map_err(StorageError::Serialization)?;
+        let value = encoding::serialize_value(edge).map_err(StorageError::Serialization)?;
         batch.put_cf(&edges_cf, &key, &value);
 
         // Outgoing adjacency: source -> edge
-        let adj_out_key = encoding::encode_adj_out_key(
-            &edge.graph_id,
-            &edge.source,
-            &edge.label,
-            &edge.id,
-        );
+        let adj_out_key =
+            encoding::encode_adj_out_key(&edge.graph_id, &edge.source, &edge.label, &edge.id);
         batch.put_cf(&adj_out_cf, &adj_out_key, edge.target.as_bytes());
 
         // Incoming adjacency: target -> edge
-        let adj_in_key = encoding::encode_adj_in_key(
-            &edge.graph_id,
-            &edge.target,
-            &edge.label,
-            &edge.id,
-        );
+        let adj_in_key =
+            encoding::encode_adj_in_key(&edge.graph_id, &edge.target, &edge.label, &edge.id);
         batch.put_cf(&adj_in_cf, &adj_in_key, edge.source.as_bytes());
 
         // Edge label index
-        let label_key =
-            encoding::encode_edge_label_key(&edge.graph_id, &edge.label, &edge.id);
+        let label_key = encoding::encode_edge_label_key(&edge.graph_id, &edge.label, &edge.id);
         batch.put_cf(&edge_labels_cf, &label_key, &[]);
 
         self.db.write(batch)?;
@@ -509,7 +677,7 @@ impl StorageEngine {
         let value = self
             .db
             .get_cf(&cf, &key)?
-            .ok_or_else(|| StorageError::NotFound(format!("edge {}", edge_id.0)))?;
+            .ok_or_else(|| StorageError::NotFound(format!("edge {}", edge_id)))?;
         encoding::deserialize_value(&value).map_err(StorageError::Deserialization)
     }
 
@@ -536,8 +704,7 @@ impl StorageEngine {
             encoding::encode_adj_out_key(graph_id, &edge.source, &edge.label, edge_id);
         batch.delete_cf(&adj_out_cf, &adj_out_key);
 
-        let adj_in_key =
-            encoding::encode_adj_in_key(graph_id, &edge.target, &edge.label, edge_id);
+        let adj_in_key = encoding::encode_adj_in_key(graph_id, &edge.target, &edge.label, edge_id);
         batch.delete_cf(&adj_in_cf, &adj_in_key);
 
         // Delete label index
@@ -572,10 +739,9 @@ impl StorageEngine {
             }
             // Extract edge_id from end of key (last 16 bytes)
             let edge_id_offset = key.len() - 16;
-            let edge_id_bytes: [u8; 16] =
-                key[edge_id_offset..].try_into().map_err(|_| {
-                    StorageError::Deserialization("invalid edge id in adj index".into())
-                })?;
+            let edge_id_bytes: [u8; 16] = key[edge_id_offset..].try_into().map_err(|_| {
+                StorageError::Deserialization("invalid edge id in adj index".into())
+            })?;
             let edge_id = synaptica_core::graph::EdgeId::from_bytes(edge_id_bytes);
             let edge = self.get_edge(graph_id, &edge_id)?;
             edges.push(edge);
@@ -606,10 +772,9 @@ impl StorageEngine {
                 break;
             }
             let edge_id_offset = key.len() - 16;
-            let edge_id_bytes: [u8; 16] =
-                key[edge_id_offset..].try_into().map_err(|_| {
-                    StorageError::Deserialization("invalid edge id in adj index".into())
-                })?;
+            let edge_id_bytes: [u8; 16] = key[edge_id_offset..].try_into().map_err(|_| {
+                StorageError::Deserialization("invalid edge id in adj index".into())
+            })?;
             let edge_id = synaptica_core::graph::EdgeId::from_bytes(edge_id_bytes);
             let edge = self.get_edge(graph_id, &edge_id)?;
             edges.push(edge);
@@ -630,10 +795,7 @@ fn format_properties_for_export(props: &std::collections::BTreeMap<String, Value
     if props.is_empty() {
         return String::new();
     }
-    let pairs: Vec<String> = props
-        .iter()
-        .map(|(k, v)| format!("{}: {}", k, v))
-        .collect();
+    let pairs: Vec<String> = props.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
     format!("{{{}}}", pairs.join(", "))
 }
 
@@ -706,11 +868,15 @@ mod tests {
         assert_eq!(fetched, edge);
 
         // Adjacency
-        let outgoing = engine.get_outgoing_edges(&graph_id, &node_a.id, None).unwrap();
+        let outgoing = engine
+            .get_outgoing_edges(&graph_id, &node_a.id, None)
+            .unwrap();
         assert_eq!(outgoing.len(), 1);
         assert_eq!(outgoing[0].id, edge.id);
 
-        let incoming = engine.get_incoming_edges(&graph_id, &node_b.id, None).unwrap();
+        let incoming = engine
+            .get_incoming_edges(&graph_id, &node_b.id, None)
+            .unwrap();
         assert_eq!(incoming.len(), 1);
         assert_eq!(incoming[0].id, edge.id);
 
@@ -718,7 +884,9 @@ mod tests {
         engine.delete_edge(&graph_id, &edge.id).unwrap();
         assert!(engine.get_edge(&graph_id, &edge.id).is_err());
 
-        let outgoing = engine.get_outgoing_edges(&graph_id, &node_a.id, None).unwrap();
+        let outgoing = engine
+            .get_outgoing_edges(&graph_id, &node_a.id, None)
+            .unwrap();
         assert_eq!(outgoing.len(), 0);
     }
 
@@ -796,7 +964,9 @@ mod tests {
         assert_eq!(works.len(), 1);
 
         // No filter
-        let all = engine.get_outgoing_edges(&graph_id, &node_a.id, None).unwrap();
+        let all = engine
+            .get_outgoing_edges(&graph_id, &node_a.id, None)
+            .unwrap();
         assert_eq!(all.len(), 2);
     }
 
@@ -985,7 +1155,9 @@ mod tests {
         assert!(engine.get_edge(&graph_id, &edge.id).is_err());
 
         // node_b's incoming edges should be empty
-        let incoming = engine.get_incoming_edges(&graph_id, &node_b.id, None).unwrap();
+        let incoming = engine
+            .get_incoming_edges(&graph_id, &node_b.id, None)
+            .unwrap();
         assert!(incoming.is_empty());
     }
 
@@ -1077,9 +1249,7 @@ mod tests {
             engine.put_edge(&edge).unwrap();
         }
 
-        let outgoing = engine
-            .get_outgoing_edges(&graph_id, &hub.id, None)
-            .unwrap();
+        let outgoing = engine.get_outgoing_edges(&graph_id, &hub.id, None).unwrap();
         assert_eq!(outgoing.len(), 50);
     }
 
@@ -1134,7 +1304,9 @@ mod tests {
         node.add_label("Person");
         engine.put_node(&node).unwrap();
 
-        let persons = engine.scan_nodes_by_label(&graph_id, &Label::new("Person")).unwrap();
+        let persons = engine
+            .scan_nodes_by_label(&graph_id, &Label::new("Person"))
+            .unwrap();
         assert_eq!(persons.len(), 1);
 
         // Update labels: remove "Person", add "Employee"
@@ -1142,10 +1314,17 @@ mod tests {
         node.add_label("Employee");
         engine.put_node(&node).unwrap();
 
-        let persons = engine.scan_nodes_by_label(&graph_id, &Label::new("Person")).unwrap();
-        assert!(persons.is_empty(), "stale Person label index should be cleaned up");
+        let persons = engine
+            .scan_nodes_by_label(&graph_id, &Label::new("Person"))
+            .unwrap();
+        assert!(
+            persons.is_empty(),
+            "stale Person label index should be cleaned up"
+        );
 
-        let employees = engine.scan_nodes_by_label(&graph_id, &Label::new("Employee")).unwrap();
+        let employees = engine
+            .scan_nodes_by_label(&graph_id, &Label::new("Employee"))
+            .unwrap();
         assert_eq!(employees.len(), 1);
         assert_eq!(employees[0].id, node.id);
     }
@@ -1167,17 +1346,36 @@ mod tests {
         let mut edge = Edge::new(graph_id, node_a.id, node_b.id, "KNOWS");
         engine.put_edge(&edge).unwrap();
 
-        assert_eq!(engine.get_outgoing_edges(&graph_id, &node_a.id, None).unwrap().len(), 1);
-        assert_eq!(engine.get_incoming_edges(&graph_id, &node_b.id, None).unwrap().len(), 1);
+        assert_eq!(
+            engine
+                .get_outgoing_edges(&graph_id, &node_a.id, None)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            engine
+                .get_incoming_edges(&graph_id, &node_b.id, None)
+                .unwrap()
+                .len(),
+            1
+        );
 
         // Update edge to A → C
         edge.target = node_c.id;
         engine.put_edge(&edge).unwrap();
 
-        let b_incoming = engine.get_incoming_edges(&graph_id, &node_b.id, None).unwrap();
-        assert!(b_incoming.is_empty(), "stale incoming index on B should be cleaned up");
+        let b_incoming = engine
+            .get_incoming_edges(&graph_id, &node_b.id, None)
+            .unwrap();
+        assert!(
+            b_incoming.is_empty(),
+            "stale incoming index on B should be cleaned up"
+        );
 
-        let c_incoming = engine.get_incoming_edges(&graph_id, &node_c.id, None).unwrap();
+        let c_incoming = engine
+            .get_incoming_edges(&graph_id, &node_c.id, None)
+            .unwrap();
         assert_eq!(c_incoming.len(), 1);
         assert_eq!(c_incoming[0].id, edge.id);
     }

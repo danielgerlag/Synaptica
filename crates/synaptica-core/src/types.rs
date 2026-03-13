@@ -125,7 +125,11 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
-            Value::Node { id, labels, properties } => {
+            Value::Node {
+                id,
+                labels,
+                properties,
+            } => {
                 write!(f, "({}", id)?;
                 for l in labels {
                     write!(f, ":{}", l)?;
@@ -142,7 +146,13 @@ impl fmt::Display for Value {
                 }
                 write!(f, ")")
             }
-            Value::Edge { id, label, source_id, target_id, properties } => {
+            Value::Edge {
+                id,
+                label,
+                source_id,
+                target_id,
+                properties,
+            } => {
                 write!(f, "({})-[:{}", source_id, label)?;
                 if !properties.is_empty() {
                     write!(f, " {{")?;

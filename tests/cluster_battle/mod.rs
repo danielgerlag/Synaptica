@@ -1,8 +1,8 @@
-pub mod harness;
 mod consensus;
-mod replication;
-mod membership;
-mod writes;
-mod reads;
-mod snapshots;
 mod failures;
+pub mod harness;
+mod membership;
+mod reads;
+mod replication;
+mod snapshots;
+mod writes;

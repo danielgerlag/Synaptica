@@ -47,7 +47,10 @@ async fn test_92_follower_crash_restart_catches_up() {
 
     cluster.router.block_node(follower).await;
 
-    let resp = cluster.write("INSERT (:Person {name: 'Alice'})").await.unwrap();
+    let resp = cluster
+        .write("INSERT (:Person {name: 'Alice'})")
+        .await
+        .unwrap();
     assert!(resp.success);
 
     cluster.router.unblock_node(follower).await;
@@ -357,7 +360,9 @@ async fn test_99_all_nodes_crash_restart_reforms() {
     let start = tokio::time::Instant::now();
     loop {
         if start.elapsed() > tokio::time::Duration::from_secs(15) {
-            let counts: Vec<_> = (1..=5u64).map(|id| (id, cluster.count_nodes_on(id))).collect();
+            let counts: Vec<_> = (1..=5u64)
+                .map(|id| (id, cluster.count_nodes_on(id)))
+                .collect();
             panic!("convergence timeout after restart. counts: {:?}", counts);
         }
         let all_have_2 = (1..=5u64).all(|id| cluster.count_nodes_on(id) == 2);

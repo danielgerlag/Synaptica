@@ -1,19 +1,19 @@
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-use synaptica_core::graph::GraphId;
-use synaptica_core::types::Value;
 use synaptica_cluster::raft::{RaftRequest, SynapticaRaft};
 use synaptica_cluster::state_machine::StateMachineApplier;
+use synaptica_core::graph::GraphId;
+use synaptica_core::types::Value;
 use synaptica_exec::engine::ExecutionEngine;
 use synaptica_gql::parser;
 use synaptica_gql::planner::QueryPlanner;
-use synaptica_storage::engine::StorageEngine;
-use synaptica_storage::index::{IndexDefinition, IndexEntityType, IndexManager};
+use synaptica_storage::backup::BackupManager;
+use synaptica_storage::engine::{StorageEngine, StorageError};
+use synaptica_storage::index::{IndexDefinition, IndexEntityType};
 
 use crate::metrics::{ACTIVE_CONNECTIONS, QUERIES_TOTAL, QUERY_DURATION, REGISTRY};
 
@@ -23,16 +23,16 @@ pub mod proto {
 
 use proto::synaptica_service_server::SynapticaService;
 use proto::{
-    gql_value, BackupInfo, BeginTransactionRequest, BeginTransactionResponse,
-    ClusterStatusRequest, ClusterStatusResponse, CommitTransactionRequest,
-    CommitTransactionResponse, CreateBackupRequest, CreateBackupResponse, CreateIndexRequest,
-    CreateIndexResponse, DeleteBackupRequest, DeleteBackupResponse, DropIndexRequest,
-    DropIndexResponse, ExportChunk, ExportGraphRequest, GetMetricsRequest, GetMetricsResponse,
-    GetSchemaRequest, GetSchemaResponse, GqlList, GqlMap, GqlValue, GraphInfo, HealthRequest,
-    HealthResponse, ImportGraphRequest, ImportGraphResponse, IndexInfo, LabelInfo, LabelSchema,
-    ListBackupsRequest, ListBackupsResponse, ListGraphsRequest, ListGraphsResponse,
-    ListIndexesRequest, ListIndexesResponse, ListLabelsRequest, ListLabelsResponse, QueryRequest,
-    QueryResponse, QueryStats, RollbackTransactionRequest, RollbackTransactionResponse, Row,
+    gql_value, BackupInfo, BeginTransactionRequest, BeginTransactionResponse, ClusterStatusRequest,
+    ClusterStatusResponse, CommitTransactionRequest, CommitTransactionResponse,
+    CreateBackupRequest, CreateBackupResponse, CreateIndexRequest, CreateIndexResponse,
+    DeleteBackupRequest, DeleteBackupResponse, DropIndexRequest, DropIndexResponse, ExportChunk,
+    ExportGraphRequest, GetMetricsRequest, GetMetricsResponse, GetSchemaRequest, GetSchemaResponse,
+    GqlList, GqlMap, GqlValue, GraphInfo, HealthRequest, HealthResponse, ImportGraphRequest,
+    ImportGraphResponse, IndexInfo, LabelInfo, LabelSchema, ListBackupsRequest,
+    ListBackupsResponse, ListGraphsRequest, ListGraphsResponse, ListIndexesRequest,
+    ListIndexesResponse, ListLabelsRequest, ListLabelsResponse, QueryRequest, QueryResponse,
+    QueryStats, RollbackTransactionRequest, RollbackTransactionResponse, Row,
 };
 
 pub struct SynapticaServiceImpl {
@@ -61,7 +61,7 @@ impl SynapticaServiceImpl {
     /// Get the display name for a graph_name request field.
     fn resolve_graph_name(&self, graph_name: &str) -> String {
         if graph_name.is_empty() {
-            self.default_graph_id.0.to_string()
+            self.default_graph_id.to_string()
         } else {
             graph_name.to_string()
         }
@@ -102,7 +102,9 @@ impl SynapticaService for SynapticaServiceImpl {
             Ok(p) => p,
             Err(e) => {
                 let elapsed = start.elapsed().as_secs_f64();
-                QUERY_DURATION.with_label_values(&[&graph_name]).observe(elapsed);
+                QUERY_DURATION
+                    .with_label_values(&[&graph_name])
+                    .observe(elapsed);
                 QUERIES_TOTAL.with_label_values(&["error"]).inc();
                 tracing::error!(error = %e, elapsed_ms = %start.elapsed().as_millis(), "parse error");
                 return Ok(Response::new(QueryResponse {
@@ -135,7 +137,9 @@ impl SynapticaService for SynapticaServiceImpl {
         &self,
         _request: Request<QueryRequest>,
     ) -> Result<Response<Self::ExecuteQueryStreamStream>, Status> {
-        Err(Status::unimplemented("execute_query_stream not implemented"))
+        Err(Status::unimplemented(
+            "execute_query_stream not implemented",
+        ))
     }
 
     #[tracing::instrument(skip(self, _request))]
@@ -200,7 +204,11 @@ impl SynapticaService for SynapticaServiceImpl {
                 .first()
             {
                 for &nid in joint.iter() {
-                    let node_role = if nid == leader_id { "leader" } else { "follower" };
+                    let node_role = if nid == leader_id {
+                        "leader"
+                    } else {
+                        "follower"
+                    };
                     nodes.push(proto::ClusterNode {
                         id: nid.to_string(),
                         address: String::new(),
@@ -252,12 +260,12 @@ impl SynapticaService for SynapticaServiceImpl {
 
         for node in &nodes {
             for label in &node.labels {
-                *node_label_counts.entry(label.0.clone()).or_default() += 1;
+                *node_label_counts.entry(label.to_string()).or_default() += 1;
             }
             // Collect edge labels by scanning outgoing edges per node
             if let Ok(edges) = self.storage.get_outgoing_edges(graph_id, &node.id, None) {
                 for edge in &edges {
-                    *edge_label_counts.entry(edge.label.0.clone()).or_default() += 1;
+                    *edge_label_counts.entry(edge.label.to_string()).or_default() += 1;
                 }
             }
         }
@@ -298,7 +306,7 @@ impl SynapticaService for SynapticaServiceImpl {
         for node in &nodes {
             for label in &node.labels {
                 let entry = node_schemas
-                    .entry(label.0.clone())
+                    .entry(label.to_string())
                     .or_insert_with(|| (BTreeSet::new(), 0));
                 entry.1 += 1;
                 for key in node.properties.keys() {
@@ -308,7 +316,7 @@ impl SynapticaService for SynapticaServiceImpl {
             if let Ok(edges) = self.storage.get_outgoing_edges(graph_id, &node.id, None) {
                 for edge in &edges {
                     let entry = edge_schemas
-                        .entry(edge.label.0.clone())
+                        .entry(edge.label.to_string())
                         .or_insert_with(|| (BTreeSet::new(), 0));
                     entry.1 += 1;
                     for key in edge.properties.keys() {
@@ -350,8 +358,8 @@ impl SynapticaService for SynapticaServiceImpl {
         let graph_id = self.resolve_graph_id(&req.graph_name);
         let graph_id = &graph_id;
 
-        let mgr = IndexManager::new(self.storage.raw_db().clone());
-        let defs = mgr
+        let defs = self
+            .storage
             .list_indexes(graph_id)
             .map_err(|e| Status::internal(format!("storage error: {}", e)))?;
 
@@ -398,8 +406,7 @@ impl SynapticaService for SynapticaServiceImpl {
             unique: req.is_unique,
         };
 
-        let mgr = IndexManager::new(self.storage.raw_db().clone());
-        match mgr.create_index(&def) {
+        match self.storage.create_index(&def) {
             Ok(()) => Ok(Response::new(CreateIndexResponse {
                 success: true,
                 error: None,
@@ -420,8 +427,7 @@ impl SynapticaService for SynapticaServiceImpl {
         let graph_id = self.resolve_graph_id(&req.graph_name);
         let graph_id = &graph_id;
 
-        let mgr = IndexManager::new(self.storage.raw_db().clone());
-        match mgr.drop_index(graph_id, &req.name) {
+        match self.storage.drop_index(graph_id, &req.name) {
             Ok(()) => Ok(Response::new(DropIndexResponse {
                 success: true,
                 error: None,
@@ -482,7 +488,7 @@ impl SynapticaService for SynapticaServiceImpl {
             .into_iter()
             .map(|m| GraphInfo {
                 name: m.name,
-                id: m.id.0.to_string(),
+                id: m.id.to_string(),
             })
             .collect();
 
@@ -494,36 +500,13 @@ impl SynapticaService for SynapticaServiceImpl {
         request: Request<CreateBackupRequest>,
     ) -> Result<Response<CreateBackupResponse>, Status> {
         let label = request.into_inner().label;
-        let label = if label.is_empty() {
-            "manual".to_string()
-        } else {
-            label
-        };
-
-        let now = chrono::Utc::now();
-        let backup_name = format!("{}_{}", now.format("%Y%m%d_%H%M%S"), label);
-        let backup_dir = PathBuf::from(&self.data_dir).join("backups").join(&backup_name);
-
-        std::fs::create_dir_all(&backup_dir)
-            .map_err(|e| Status::internal(format!("failed to create backup dir: {}", e)))?;
-
-        self.storage
-            .create_backup(&backup_dir)
+        let backup = BackupManager::new(&self.data_dir)
+            .create(self.storage.as_ref(), &label)
             .map_err(|e| Status::internal(format!("backup failed: {}", e)))?;
 
-        // Write metadata
-        let meta = serde_json::json!({
-            "label": label,
-            "created_at": now.to_rfc3339(),
-            "backup_name": backup_name,
-        });
-        let meta_path = backup_dir.join("backup_meta.json");
-        std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap())
-            .map_err(|e| Status::internal(format!("failed to write backup metadata: {}", e)))?;
-
         Ok(Response::new(CreateBackupResponse {
-            backup_name,
-            created_at: now.to_rfc3339(),
+            backup_name: backup.name,
+            created_at: backup.created_at,
         }))
     }
 
@@ -531,42 +514,18 @@ impl SynapticaService for SynapticaServiceImpl {
         &self,
         _request: Request<ListBackupsRequest>,
     ) -> Result<Response<ListBackupsResponse>, Status> {
-        let backups_dir = PathBuf::from(&self.data_dir).join("backups");
-        let mut backups = Vec::new();
+        let backups = BackupManager::new(&self.data_dir)
+            .list()
+            .map_err(|e| Status::internal(format!("failed to list backups: {}", e)))?
+            .into_iter()
+            .map(|backup| BackupInfo {
+                name: backup.name,
+                label: backup.label,
+                created_at: backup.created_at,
+                size_bytes: backup.size_bytes,
+            })
+            .collect();
 
-        if backups_dir.exists() {
-            let entries = std::fs::read_dir(&backups_dir)
-                .map_err(|e| Status::internal(format!("failed to read backups dir: {}", e)))?;
-
-            for entry in entries {
-                let entry = entry
-                    .map_err(|e| Status::internal(format!("failed to read entry: {}", e)))?;
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-                let meta_path = path.join("backup_meta.json");
-                if !meta_path.exists() {
-                    continue;
-                }
-                let meta_str = std::fs::read_to_string(&meta_path)
-                    .map_err(|e| Status::internal(format!("failed to read meta: {}", e)))?;
-                let meta: serde_json::Value = serde_json::from_str(&meta_str)
-                    .map_err(|e| Status::internal(format!("failed to parse meta: {}", e)))?;
-
-                // Calculate directory size
-                let size = dir_size(&path).unwrap_or(0);
-
-                backups.push(BackupInfo {
-                    name: entry.file_name().to_string_lossy().to_string(),
-                    label: meta["label"].as_str().unwrap_or("").to_string(),
-                    created_at: meta["created_at"].as_str().unwrap_or("").to_string(),
-                    size_bytes: size,
-                });
-            }
-        }
-
-        backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(Response::new(ListBackupsResponse { backups }))
     }
 
@@ -575,22 +534,18 @@ impl SynapticaService for SynapticaServiceImpl {
         request: Request<DeleteBackupRequest>,
     ) -> Result<Response<DeleteBackupResponse>, Status> {
         let name = request.into_inner().backup_name;
-        let backup_path = PathBuf::from(&self.data_dir).join("backups").join(&name);
 
-        if !backup_path.exists() {
-            return Ok(Response::new(DeleteBackupResponse {
+        match BackupManager::new(&self.data_dir).delete(&name) {
+            Ok(()) => Ok(Response::new(DeleteBackupResponse {
+                success: true,
+                message: format!("backup '{}' deleted", name),
+            })),
+            Err(StorageError::NotFound(_)) => Ok(Response::new(DeleteBackupResponse {
                 success: false,
                 message: format!("backup '{}' not found", name),
-            }));
+            })),
+            Err(e) => Err(Status::internal(format!("failed to delete backup: {}", e))),
         }
-
-        std::fs::remove_dir_all(&backup_path)
-            .map_err(|e| Status::internal(format!("failed to delete backup: {}", e)))?;
-
-        Ok(Response::new(DeleteBackupResponse {
-            success: true,
-            message: format!("backup '{}' deleted", name),
-        }))
     }
 
     type ExportGraphStream = ReceiverStream<Result<ExportChunk, Status>>;
@@ -617,7 +572,8 @@ impl SynapticaService for SynapticaServiceImpl {
                     }
                 }
                 Err(e) => {
-                    let _ = tx.blocking_send(Err(Status::internal(format!("export failed: {}", e))));
+                    let _ =
+                        tx.blocking_send(Err(Status::internal(format!("export failed: {}", e))));
                 }
             }
         });
@@ -677,11 +633,7 @@ impl SynapticaService for SynapticaServiceImpl {
                 Err(e) => {
                     return Ok(Response::new(ImportGraphResponse {
                         statements_executed: executed,
-                        error: Some(format!(
-                            "parse error at statement {}: {}",
-                            executed + 1,
-                            e
-                        )),
+                        error: Some(format!("parse error at statement {}: {}", executed + 1, e)),
                     }));
                 }
             }
@@ -708,7 +660,9 @@ impl SynapticaServiceImpl {
             Ok(p) => p,
             Err(e) => {
                 let elapsed = start.elapsed().as_secs_f64();
-                QUERY_DURATION.with_label_values(&[graph_name]).observe(elapsed);
+                QUERY_DURATION
+                    .with_label_values(&[graph_name])
+                    .observe(elapsed);
                 QUERIES_TOTAL.with_label_values(&["error"]).inc();
                 return Ok(Response::new(QueryResponse {
                     columns: vec![],
@@ -724,7 +678,9 @@ impl SynapticaServiceImpl {
             Ok(rs) => rs,
             Err(e) => {
                 let elapsed = start.elapsed().as_secs_f64();
-                QUERY_DURATION.with_label_values(&[graph_name]).observe(elapsed);
+                QUERY_DURATION
+                    .with_label_values(&[graph_name])
+                    .observe(elapsed);
                 QUERIES_TOTAL.with_label_values(&["error"]).inc();
                 return Ok(Response::new(QueryResponse {
                     columns: vec![],
@@ -744,7 +700,11 @@ impl SynapticaServiceImpl {
         let elapsed_ms = std::cmp::max(1, elapsed.as_millis() as i64);
         let rows_returned = result_set.records.len() as i64;
 
-        tracing::info!(rows = rows_returned, elapsed_ms = elapsed_ms, "query completed");
+        tracing::info!(
+            rows = rows_returned,
+            elapsed_ms = elapsed_ms,
+            "query completed"
+        );
 
         let columns = result_set.columns.clone();
         let rows: Vec<Row> = result_set
@@ -810,10 +770,7 @@ impl SynapticaServiceImpl {
                                 edges_deleted: 0,
                                 properties_set: 0,
                                 rows_returned: result.rows_affected,
-                                execution_time_ms: std::cmp::max(
-                                    1,
-                                    elapsed.as_millis() as i64,
-                                ),
+                                execution_time_ms: std::cmp::max(1, elapsed.as_millis() as i64),
                             }),
                             error: None,
                         }))
@@ -832,7 +789,9 @@ impl SynapticaServiceImpl {
             }
             Err(e) => {
                 let elapsed = start.elapsed().as_secs_f64();
-                QUERY_DURATION.with_label_values(&[graph_name]).observe(elapsed);
+                QUERY_DURATION
+                    .with_label_values(&[graph_name])
+                    .observe(elapsed);
                 QUERIES_TOTAL.with_label_values(&["error"]).inc();
 
                 // If not leader, the error may contain leader info for redirect
@@ -852,18 +811,20 @@ impl SynapticaServiceImpl {
 /// Determine if a parsed GQL program contains write operations.
 fn is_write_query(program: &synaptica_gql::ast::GqlProgram) -> bool {
     use synaptica_gql::ast::GqlStatement;
-    program.statements.iter().any(|stmt| matches!(
-        stmt,
-        GqlStatement::Insert(_)
-            | GqlStatement::Set(_)
-            | GqlStatement::Delete(_)
-            | GqlStatement::Remove(_)
-            | GqlStatement::CreateGraph(_)
-            | GqlStatement::DropGraph(_)
-            | GqlStatement::CreateGraphType(_)
-            | GqlStatement::CreateIndex(_)
-            | GqlStatement::DropIndex(_)
-    ))
+    program.statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            GqlStatement::Insert(_)
+                | GqlStatement::Set(_)
+                | GqlStatement::Delete(_)
+                | GqlStatement::Remove(_)
+                | GqlStatement::CreateGraph(_)
+                | GqlStatement::DropGraph(_)
+                | GqlStatement::CreateGraphType(_)
+                | GqlStatement::CreateIndex(_)
+                | GqlStatement::DropIndex(_)
+        )
+    })
 }
 
 fn value_to_proto(value: &Value) -> GqlValue {
@@ -887,8 +848,13 @@ fn value_to_proto(value: &Value) -> GqlValue {
                 .collect();
             Some(gql_value::Kind::MapValue(GqlMap { entries }))
         }
-        Value::Node { id, labels, properties } => {
-            let proto_props = properties.iter()
+        Value::Node {
+            id,
+            labels,
+            properties,
+        } => {
+            let proto_props = properties
+                .iter()
                 .map(|(k, v)| (k.clone(), value_to_proto(v)))
                 .collect();
             Some(gql_value::Kind::NodeValue(proto::GqlNode {
@@ -897,8 +863,15 @@ fn value_to_proto(value: &Value) -> GqlValue {
                 properties: proto_props,
             }))
         }
-        Value::Edge { id, label, source_id, target_id, properties } => {
-            let proto_props = properties.iter()
+        Value::Edge {
+            id,
+            label,
+            source_id,
+            target_id,
+            properties,
+        } => {
+            let proto_props = properties
+                .iter()
                 .map(|(k, v)| (k.clone(), value_to_proto(v)))
                 .collect();
             Some(gql_value::Kind::EdgeValue(proto::GqlEdge {

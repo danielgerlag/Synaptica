@@ -75,10 +75,11 @@ fn create_backup_produces_valid_checkpoint() {
 
     // RocksDB checkpoint creates files in the directory
     assert!(backup_dir.exists());
-    let entries: Vec<_> = std::fs::read_dir(&backup_dir)
-        .unwrap()
-        .collect();
-    assert!(!entries.is_empty(), "backup directory should contain RocksDB files");
+    let entries: Vec<_> = std::fs::read_dir(&backup_dir).unwrap().collect();
+    assert!(
+        !entries.is_empty(),
+        "backup directory should contain RocksDB files"
+    );
 }
 
 #[test]
@@ -95,8 +96,7 @@ fn backup_is_independent_from_live_db() {
     env.exec("default", "INSERT (:Person {name: 'Charlie'})");
 
     // Open the backup as a separate StorageEngine
-    let backup_storage =
-        StorageEngine::open(&backup_dir, &StorageConfig::default()).unwrap();
+    let backup_storage = StorageEngine::open(&backup_dir, &StorageConfig::default()).unwrap();
     let engine = ExecutionEngine::new(&backup_storage);
     let graph_id = GraphId::from_name("default");
     let program = parse("MATCH (n:Person) RETURN n.name").unwrap();
@@ -162,7 +162,10 @@ fn export_empty_graph_produces_no_output() {
     let mut buf = Vec::new();
     env.storage.export_graph(&gid, &mut buf).unwrap();
     let output = String::from_utf8(buf).unwrap();
-    assert!(output.trim().is_empty(), "empty graph should export nothing");
+    assert!(
+        output.trim().is_empty(),
+        "empty graph should export nothing"
+    );
 }
 
 #[test]
@@ -181,7 +184,10 @@ fn export_includes_all_nodes() {
     assert!(output.contains("Alice"), "export should contain Alice");
     assert!(output.contains("Bob"), "export should contain Bob");
     assert!(output.contains("NYC"), "export should contain NYC");
-    assert!(output.contains("Person"), "export should contain Person label");
+    assert!(
+        output.contains("Person"),
+        "export should contain Person label"
+    );
     assert!(output.contains("City"), "export should contain City label");
 }
 
@@ -201,8 +207,14 @@ fn export_includes_edges() {
     env.storage.export_graph(&gid, &mut buf).unwrap();
     let output = String::from_utf8(buf).unwrap();
 
-    assert!(output.contains("KNOWS"), "export should contain KNOWS edge label");
-    assert!(output.contains("since"), "export should contain edge property");
+    assert!(
+        output.contains("KNOWS"),
+        "export should contain KNOWS edge label"
+    );
+    assert!(
+        output.contains("since"),
+        "export should contain edge property"
+    );
 }
 
 #[test]
@@ -268,10 +280,7 @@ fn round_trip_nodes_preserve_data() {
     assert_eq!(env2.count_nodes("g", "City"), 1);
 
     // Verify properties
-    let mut names = col_strings(
-        &env2.exec("g", "MATCH (n:Person) RETURN n.name"),
-        "n.name",
-    );
+    let mut names = col_strings(&env2.exec("g", "MATCH (n:Person) RETURN n.name"), "n.name");
     names.sort();
     assert_eq!(names, vec!["Alice", "Bob"]);
 }
@@ -337,10 +346,7 @@ fn round_trip_preserves_edge_properties() {
         env2.exec("g", line);
     }
 
-    let rs = env2.exec(
-        "g",
-        "MATCH (a)-[r:KNOWS]->(b) RETURN r.since",
-    );
+    let rs = env2.exec("g", "MATCH (a)-[r:KNOWS]->(b) RETURN r.since");
     assert_eq!(rs.records.len(), 1);
     let since = rs.records[0].get("r.since").cloned().unwrap_or(Value::Null);
     assert_eq!(since, Value::Integer(2020));
@@ -359,7 +365,9 @@ fn round_trip_multiple_graphs() {
     let gid_inv = GraphId::from_name("inventory");
     let mut buf_social = Vec::new();
     let mut buf_inv = Vec::new();
-    env1.storage.export_graph(&gid_social, &mut buf_social).unwrap();
+    env1.storage
+        .export_graph(&gid_social, &mut buf_social)
+        .unwrap();
     env1.storage.export_graph(&gid_inv, &mut buf_inv).unwrap();
 
     let exp_social = String::from_utf8(buf_social).unwrap();
@@ -372,11 +380,15 @@ fn round_trip_multiple_graphs() {
 
     for line in exp_social.lines() {
         let line = line.trim();
-        if !line.is_empty() { env2.exec("social", line); }
+        if !line.is_empty() {
+            env2.exec("social", line);
+        }
     }
     for line in exp_inv.lines() {
         let line = line.trim();
-        if !line.is_empty() { env2.exec("inventory", line); }
+        if !line.is_empty() {
+            env2.exec("inventory", line);
+        }
     }
 
     assert_eq!(env2.count_nodes("social", "Person"), 1);
@@ -416,7 +428,9 @@ fn full_backup_restore_cycle() {
 
     // Should have original 2 users, not the hacker
     assert_eq!(rs.records.len(), 2);
-    let mut names: Vec<String> = rs.records.iter()
+    let mut names: Vec<String> = rs
+        .records
+        .iter()
         .filter_map(|r| match r.get("n.name") {
             Some(Value::String(s)) => Some(s.clone()),
             _ => None,
@@ -444,8 +458,12 @@ fn backup_preserves_multiple_graphs() {
     let gid2 = GraphId::from_name("g2");
     let planner = QueryPlanner::new();
 
-    let p1 = planner.plan(&parse("MATCH (n:A) RETURN n").unwrap()).unwrap();
-    let p2 = planner.plan(&parse("MATCH (n:B) RETURN n").unwrap()).unwrap();
+    let p1 = planner
+        .plan(&parse("MATCH (n:A) RETURN n").unwrap())
+        .unwrap();
+    let p2 = planner
+        .plan(&parse("MATCH (n:B) RETURN n").unwrap())
+        .unwrap();
 
     let r1 = e.execute_plan(&p1, &gid1).unwrap();
     let r2 = e.execute_plan(&p2, &gid2).unwrap();
@@ -458,7 +476,10 @@ fn backup_preserves_multiple_graphs() {
 fn backup_preserves_indexes() {
     let env = BackupEnv::new();
     env.create_graph("g");
-    env.exec("g", "CREATE INDEX idx_person_name FOR (n:Person) ON (n.name)");
+    env.exec(
+        "g",
+        "CREATE INDEX idx_person_name FOR (n:Person) ON (n.name)",
+    );
     env.exec("g", "INSERT (:Person {name: 'Alice'})");
 
     let backup_path = env.dir.path().join("idx_backup");
@@ -480,7 +501,7 @@ fn export_large_graph() {
     env.create_graph("g");
     // Insert 100 nodes
     for i in 0..100 {
-        env.exec("g", &format!("INSERT (:Item {{id: {i}}})")); 
+        env.exec("g", &format!("INSERT (:Item {{id: {i}}})"));
     }
 
     let gid = GraphId::from_name("g");

@@ -23,10 +23,7 @@ pub struct ClusterServiceImpl {
 
 #[tonic::async_trait]
 impl ClusterService for ClusterServiceImpl {
-    async fn vote(
-        &self,
-        request: Request<RaftMessage>,
-    ) -> Result<Response<RaftMessage>, Status> {
+    async fn vote(&self, request: Request<RaftMessage>) -> Result<Response<RaftMessage>, Status> {
         let data = request.into_inner().data;
         let req: openraft::raft::VoteRequest<NodeId> = bincode::deserialize(&data)
             .map_err(|e| Status::invalid_argument(format!("deserialize vote request: {}", e)))?;
@@ -48,12 +45,9 @@ impl ClusterService for ClusterServiceImpl {
         request: Request<RaftMessage>,
     ) -> Result<Response<RaftMessage>, Status> {
         let data = request.into_inner().data;
-        let req: openraft::raft::AppendEntriesRequest<TypeConfig> =
-            bincode::deserialize(&data).map_err(|e| {
-                Status::invalid_argument(format!(
-                    "deserialize append_entries request: {}",
-                    e
-                ))
+        let req: openraft::raft::AppendEntriesRequest<TypeConfig> = bincode::deserialize(&data)
+            .map_err(|e| {
+                Status::invalid_argument(format!("deserialize append_entries request: {}", e))
             })?;
 
         let resp = self
@@ -73,13 +67,10 @@ impl ClusterService for ClusterServiceImpl {
         request: Request<RaftMessage>,
     ) -> Result<Response<RaftMessage>, Status> {
         let data = request.into_inner().data;
-        let req: openraft::raft::InstallSnapshotRequest<TypeConfig> =
-            bincode::deserialize(&data).map_err(|e| {
-                Status::invalid_argument(format!(
-                    "deserialize install_snapshot request: {}",
-                    e
-                ))
-            })?;
+        let req: openraft::raft::InstallSnapshotRequest<TypeConfig> = bincode::deserialize(&data)
+            .map_err(|e| {
+            Status::invalid_argument(format!("deserialize install_snapshot request: {}", e))
+        })?;
 
         let resp = self
             .raft
@@ -87,9 +78,8 @@ impl ClusterService for ClusterServiceImpl {
             .await
             .map_err(|e| Status::internal(format!("raft install_snapshot: {}", e)))?;
 
-        let resp_data = bincode::serialize(&resp).map_err(|e| {
-            Status::internal(format!("serialize install_snapshot response: {}", e))
-        })?;
+        let resp_data = bincode::serialize(&resp)
+            .map_err(|e| Status::internal(format!("serialize install_snapshot response: {}", e)))?;
 
         Ok(Response::new(RaftMessage { data: resp_data }))
     }
@@ -126,9 +116,7 @@ impl ClusterService for ClusterServiceImpl {
         request: Request<AddLearnerRequest>,
     ) -> Result<Response<AddLearnerResponse>, Status> {
         let req = request.into_inner();
-        let node = openraft::BasicNode {
-            addr: req.address,
-        };
+        let node = openraft::BasicNode { addr: req.address };
 
         match self.raft.add_learner(req.node_id, node, true).await {
             Ok(_) => Ok(Response::new(AddLearnerResponse {
@@ -147,8 +135,7 @@ impl ClusterService for ClusterServiceImpl {
         request: Request<ChangeMembershipRequest>,
     ) -> Result<Response<ChangeMembershipResponse>, Status> {
         let req = request.into_inner();
-        let voters: std::collections::BTreeSet<NodeId> =
-            req.voter_ids.into_iter().collect();
+        let voters: std::collections::BTreeSet<NodeId> = req.voter_ids.into_iter().collect();
 
         match self.raft.change_membership(voters, false).await {
             Ok(_) => Ok(Response::new(ChangeMembershipResponse {

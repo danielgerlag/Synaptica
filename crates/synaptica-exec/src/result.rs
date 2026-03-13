@@ -11,7 +11,10 @@ pub struct Record {
 
 impl Record {
     pub fn new(columns: Vec<String>, values: Vec<Value>) -> Self {
-        Self { columns: Arc::new(columns), values }
+        Self {
+            columns: Arc::new(columns),
+            values,
+        }
     }
 
     /// Look up a value by column name.

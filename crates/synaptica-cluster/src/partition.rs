@@ -109,9 +109,18 @@ mod tests {
         pm.add_partition(make_partition("p2", 0x40, 0x80)).unwrap();
         pm.add_partition(make_partition("p3", 0x80, 0xFF)).unwrap();
 
-        assert_eq!(pm.find_partition(&[0x20]).unwrap().id, PartitionId("p1".to_string()));
-        assert_eq!(pm.find_partition(&[0x60]).unwrap().id, PartitionId("p2".to_string()));
-        assert_eq!(pm.find_partition(&[0xA0]).unwrap().id, PartitionId("p3".to_string()));
+        assert_eq!(
+            pm.find_partition(&[0x20]).unwrap().id,
+            PartitionId("p1".to_string())
+        );
+        assert_eq!(
+            pm.find_partition(&[0x60]).unwrap().id,
+            PartitionId("p2".to_string())
+        );
+        assert_eq!(
+            pm.find_partition(&[0xA0]).unwrap().id,
+            PartitionId("p3".to_string())
+        );
     }
 
     #[test]

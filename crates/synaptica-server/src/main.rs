@@ -95,13 +95,9 @@ async fn main() -> anyhow::Result<()> {
         || !cli.peer.is_empty();
 
     if cluster_mode {
-        let node_id = cli.node_id.unwrap_or_else(|| {
-            config
-                .cluster
-                .as_ref()
-                .map(|c| c.node_id)
-                .unwrap_or(1)
-        });
+        let node_id = cli
+            .node_id
+            .unwrap_or_else(|| config.cluster.as_ref().map(|c| c.node_id).unwrap_or(1));
         let cluster_addr = cli.cluster_addr.clone().unwrap_or_else(|| {
             config
                 .cluster
@@ -263,7 +259,8 @@ async fn serve_static_files(addr: &str, dir: &str) -> anyhow::Result<()> {
                             Err(_) => return,
                         };
                         if !canonical.starts_with(&base_canonical) {
-                            let header = "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\n\r\nForbidden";
+                            let header =
+                                "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\n\r\nForbidden";
                             let _ = stream.write_all(header.as_bytes()).await;
                             return;
                         }
@@ -278,7 +275,11 @@ async fn serve_static_files(addr: &str, dir: &str) -> anyhow::Result<()> {
                 let ct = guess_content_type(&file_path);
                 match tokio::fs::read(&file_path).await {
                     Ok(data) => (data, ct, "200 OK"),
-                    Err(_) => (b"Internal Server Error".to_vec(), "text/plain", "500 Internal Server Error"),
+                    Err(_) => (
+                        b"Internal Server Error".to_vec(),
+                        "text/plain",
+                        "500 Internal Server Error",
+                    ),
                 }
             } else {
                 let index = base.join("index.html");

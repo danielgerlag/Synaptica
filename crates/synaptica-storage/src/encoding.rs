@@ -130,11 +130,7 @@ pub fn encode_adj_out_prefix(graph_id: &GraphId, source: &NodeId) -> Vec<u8> {
 }
 
 /// Encode prefix for scanning all outgoing edges with a specific label.
-pub fn encode_adj_out_label_prefix(
-    graph_id: &GraphId,
-    source: &NodeId,
-    label: &Label,
-) -> Vec<u8> {
+pub fn encode_adj_out_label_prefix(graph_id: &GraphId, source: &NodeId, label: &Label) -> Vec<u8> {
     let mut buf = Vec::with_capacity(UUID_LEN * 2 + label.as_str().len() + 2);
     encode_uuid(graph_id.as_bytes(), &mut buf);
     encode_uuid(source.as_bytes(), &mut buf);
@@ -151,11 +147,7 @@ pub fn encode_adj_in_prefix(graph_id: &GraphId, target: &NodeId) -> Vec<u8> {
 }
 
 /// Encode prefix for scanning all incoming edges with a specific label.
-pub fn encode_adj_in_label_prefix(
-    graph_id: &GraphId,
-    target: &NodeId,
-    label: &Label,
-) -> Vec<u8> {
+pub fn encode_adj_in_label_prefix(graph_id: &GraphId, target: &NodeId, label: &Label) -> Vec<u8> {
     let mut buf = Vec::with_capacity(UUID_LEN * 2 + label.as_str().len() + 2);
     encode_uuid(graph_id.as_bytes(), &mut buf);
     encode_uuid(target.as_bytes(), &mut buf);

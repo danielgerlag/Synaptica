@@ -8,14 +8,15 @@ use synaptica_core::types::Value;
 use synaptica_exec::engine::ExecutionEngine;
 use synaptica_gql::parser;
 use synaptica_gql::planner::QueryPlanner;
+use synaptica_storage::backup::BackupManager;
 use synaptica_storage::engine::{StorageConfig, StorageEngine};
-use synaptica_storage::index::IndexManager;
 
 use crate::backend::*;
 
 /// Embedded local backend — runs the full query engine in-process.
 pub struct LocalBackend {
     storage: Arc<StorageEngine>,
+    data_dir: String,
     default_graph: String,
 }
 
@@ -34,6 +35,7 @@ impl LocalBackend {
 
         Ok(Self {
             storage,
+            data_dir: data_dir.to_string(),
             default_graph: default_graph.to_string(),
         })
     }
@@ -55,17 +57,23 @@ fn value_to_json(value: &Value) -> serde_json::Value {
         Value::Float(f) => serde_json::json!(*f),
         Value::String(s) => serde_json::Value::String(s.clone()),
         Value::Bytes(b) => serde_json::json!(format!("0x{}", hex::encode(b))),
-        Value::List(items) => {
-            serde_json::Value::Array(items.iter().map(value_to_json).collect())
-        }
+        Value::List(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Map(map) => {
-            let obj: serde_json::Map<String, serde_json::Value> =
-                map.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect();
+            let obj: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect();
             serde_json::Value::Object(obj)
         }
-        Value::Node { id, labels, properties } => {
-            let props: serde_json::Map<String, serde_json::Value> =
-                properties.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect();
+        Value::Node {
+            id,
+            labels,
+            properties,
+        } => {
+            let props: serde_json::Map<String, serde_json::Value> = properties
+                .iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect();
             serde_json::json!({
                 "_type": "node",
                 "id": id,
@@ -73,9 +81,17 @@ fn value_to_json(value: &Value) -> serde_json::Value {
                 "properties": props,
             })
         }
-        Value::Edge { id, label, source_id, target_id, properties } => {
-            let props: serde_json::Map<String, serde_json::Value> =
-                properties.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect();
+        Value::Edge {
+            id,
+            label,
+            source_id,
+            target_id,
+            properties,
+        } => {
+            let props: serde_json::Map<String, serde_json::Value> = properties
+                .iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect();
             serde_json::json!({
                 "_type": "edge",
                 "id": id,
@@ -96,8 +112,8 @@ impl SynapticaBackend for LocalBackend {
         let graph_id = GraphId::from_name(&graph_name);
         let start = std::time::Instant::now();
 
-        let program = parser::parse(query)
-            .map_err(|e| anyhow::anyhow!("Parse error: {}", e.message))?;
+        let program =
+            parser::parse(query).map_err(|e| anyhow::anyhow!("Parse error: {}", e.message))?;
 
         let planner = QueryPlanner;
         let plan = planner
@@ -144,7 +160,7 @@ impl SynapticaBackend for LocalBackend {
         for node in &nodes {
             for label in &node.labels {
                 let entry = node_schemas
-                    .entry(label.0.clone())
+                    .entry(label.to_string())
                     .or_insert_with(|| (Vec::new(), 0));
                 entry.1 += 1;
                 for key in node.properties.keys() {
@@ -157,7 +173,7 @@ impl SynapticaBackend for LocalBackend {
             let edges = self.storage.get_outgoing_edges(&graph_id, &node.id, None)?;
             for edge in &edges {
                 let entry = edge_schemas
-                    .entry(edge.label.0.clone())
+                    .entry(edge.label.to_string())
                     .or_insert_with(|| (Vec::new(), 0));
                 entry.1 += 1;
                 for key in edge.properties.keys() {
@@ -211,14 +227,17 @@ impl SynapticaBackend for LocalBackend {
     async fn list_indexes(&self, graph: &str) -> anyhow::Result<Vec<IndexInfo>> {
         let graph_name = self.resolve_graph(graph);
         let graph_id = GraphId::from_name(&graph_name);
-        let mgr = IndexManager::new(self.storage.raw_db().clone());
-        let defs = mgr.list_indexes(&graph_id)?;
+        let defs = self.storage.list_indexes(&graph_id)?;
         Ok(defs
             .into_iter()
             .map(|d| {
                 // Index names follow convention: idx_{label}_{property}
                 let parts: Vec<&str> = d.name.splitn(3, '_').collect();
-                let label = if parts.len() >= 2 { parts[1].to_string() } else { d.name.clone() };
+                let label = if parts.len() >= 2 {
+                    parts[1].to_string()
+                } else {
+                    d.name.clone()
+                };
                 IndexInfo {
                     label,
                     property: d.property_names.join(", "),
@@ -245,12 +264,7 @@ impl SynapticaBackend for LocalBackend {
         Ok(format!("Index created on :{}({})", label, property))
     }
 
-    async fn drop_index(
-        &self,
-        label: &str,
-        property: &str,
-        graph: &str,
-    ) -> anyhow::Result<String> {
+    async fn drop_index(&self, label: &str, property: &str, graph: &str) -> anyhow::Result<String> {
         let idx_name = format!("idx_{}_{}", label, property);
         let query = format!("DROP INDEX {}", idx_name);
         let result = self.execute_query(&query, graph).await?;
@@ -277,66 +291,31 @@ impl SynapticaBackend for LocalBackend {
             .into_iter()
             .map(|m| GraphSummary {
                 name: m.name,
-                id: m.id.0.to_string(),
+                id: m.id.to_string(),
             })
             .collect())
     }
 
     async fn create_backup(&self, label: &str) -> anyhow::Result<String> {
-        let label = if label.is_empty() { "manual" } else { label };
-        let now = chrono::Utc::now();
-        let backup_name = format!("{}_{}", now.format("%Y%m%d_%H%M%S"), label);
-        // Store backups alongside the data directory
-        let backup_dir = std::path::PathBuf::from("backups").join(&backup_name);
-        std::fs::create_dir_all(&backup_dir)?;
-        self.storage.create_backup(&backup_dir)?;
-
-        let meta = serde_json::json!({
-            "label": label,
-            "created_at": now.to_rfc3339(),
-            "backup_name": backup_name,
-        });
-        std::fs::write(
-            backup_dir.join("backup_meta.json"),
-            serde_json::to_string_pretty(&meta)?,
-        )?;
-        Ok(format!("Backup '{}' created", backup_name))
+        let backup = BackupManager::new(&self.data_dir).create(self.storage.as_ref(), label)?;
+        Ok(format!("Backup '{}' created", backup.name))
     }
 
     async fn list_backups(&self) -> anyhow::Result<Vec<BackupSummary>> {
-        let backups_dir = std::path::PathBuf::from("backups");
-        let mut backups = Vec::new();
-        if backups_dir.exists() {
-            for entry in std::fs::read_dir(&backups_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-                let meta_path = path.join("backup_meta.json");
-                if !meta_path.exists() {
-                    continue;
-                }
-                let meta: serde_json::Value =
-                    serde_json::from_str(&std::fs::read_to_string(&meta_path)?)?;
-                backups.push(BackupSummary {
-                    name: entry.file_name().to_string_lossy().to_string(),
-                    label: meta["label"].as_str().unwrap_or("").to_string(),
-                    created_at: meta["created_at"].as_str().unwrap_or("").to_string(),
-                    size_bytes: 0,
-                });
-            }
-        }
-        backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        Ok(backups)
+        Ok(BackupManager::new(&self.data_dir)
+            .list()?
+            .into_iter()
+            .map(|backup| BackupSummary {
+                name: backup.name,
+                label: backup.label,
+                created_at: backup.created_at,
+                size_bytes: backup.size_bytes,
+            })
+            .collect())
     }
 
     async fn delete_backup(&self, name: &str) -> anyhow::Result<String> {
-        let backup_path = std::path::PathBuf::from("backups").join(name);
-        if !backup_path.exists() {
-            anyhow::bail!("Backup '{}' not found", name);
-        }
-        std::fs::remove_dir_all(&backup_path)?;
+        BackupManager::new(&self.data_dir).delete(name)?;
         Ok(format!("Backup '{}' deleted", name))
     }
 }

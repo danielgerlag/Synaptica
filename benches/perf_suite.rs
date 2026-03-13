@@ -151,11 +151,9 @@ struct TestEnv {
 impl TestEnv {
     fn new() -> Self {
         let tmpdir = tempfile::TempDir::new().expect("temp dir");
-        let storage = StorageEngine::open(
-            tmpdir.path().to_str().unwrap(),
-            &StorageConfig::default(),
-        )
-        .expect("open storage");
+        let storage =
+            StorageEngine::open(tmpdir.path().to_str().unwrap(), &StorageConfig::default())
+                .expect("open storage");
 
         let graph_id = GraphId::from_name("bench");
         storage
@@ -186,9 +184,10 @@ impl TestEnv {
             node.add_label("Person");
             node.set_property("name", Value::String(format!("Person_{}", i)));
             node.set_property("age", Value::Integer((20 + i % 60) as i64));
-            node.set_property("city", Value::String(
-                ["NYC", "LA", "Chicago", "Boston", "Seattle"][i % 5].to_string(),
-            ));
+            node.set_property(
+                "city",
+                Value::String(["NYC", "LA", "Chicago", "Boston", "Seattle"][i % 5].to_string()),
+            );
             self.storage.put_node(&node).expect("put node");
         }
     }
@@ -255,7 +254,9 @@ fn run_parse_benchmarks(results: &mut Vec<BenchResult>) {
         results.push(bench(
             &format!("parse/{}", name),
             "parse",
-            || { parser::parse(q).unwrap(); },
+            || {
+                parser::parse(q).unwrap();
+            },
             50,
         ));
     }
@@ -275,7 +276,9 @@ fn run_plan_benchmarks(results: &mut Vec<BenchResult>) {
         results.push(bench(
             &format!("plan/{}", name),
             "plan",
-            || { QueryPlanner::new().plan(&p).unwrap(); },
+            || {
+                QueryPlanner::new().plan(&p).unwrap();
+            },
             50,
         ));
     }
@@ -290,9 +293,7 @@ fn run_insert_benchmarks(results: &mut Vec<BenchResult>) {
             "insert/single_node_gql",
             "write",
             || {
-                env.execute_gql(&format!(
-                    "INSERT (:Bench {{id: {}, value: 'test'}})", i
-                ));
+                env.execute_gql(&format!("INSERT (:Bench {{id: {}, value: 'test'}})", i));
                 i += 1;
             },
             10,
@@ -376,39 +377,43 @@ fn run_scan_benchmarks(results: &mut Vec<BenchResult>) {
             results.push(bench(
                 &format!("scan/{}_full", label),
                 "read",
-                || { engine.execute_plan(&plan, &gid).unwrap(); },
+                || {
+                    engine.execute_plan(&plan, &gid).unwrap();
+                },
                 5,
             ));
         }
 
         // Filtered scan
         {
-            let program = parser::parse(
-                "MATCH (n:Person) WHERE n.age > 50 RETURN n.name"
-            ).unwrap();
+            let program = parser::parse("MATCH (n:Person) WHERE n.age > 50 RETURN n.name").unwrap();
             let plan = QueryPlanner::new().plan(&program).unwrap();
             let engine = ExecutionEngine::new(&env.storage);
             let gid = env.graph_id;
             results.push(bench(
                 &format!("scan/{}_filtered", label),
                 "read",
-                || { engine.execute_plan(&plan, &gid).unwrap(); },
+                || {
+                    engine.execute_plan(&plan, &gid).unwrap();
+                },
                 5,
             ));
         }
 
         // Scan + ORDER BY + LIMIT
         {
-            let program = parser::parse(
-                "MATCH (n:Person) RETURN n.name, n.age ORDER BY n.age DESC LIMIT 10"
-            ).unwrap();
+            let program =
+                parser::parse("MATCH (n:Person) RETURN n.name, n.age ORDER BY n.age DESC LIMIT 10")
+                    .unwrap();
             let plan = QueryPlanner::new().plan(&program).unwrap();
             let engine = ExecutionEngine::new(&env.storage);
             let gid = env.graph_id;
             results.push(bench(
                 &format!("scan/{}_sort_limit", label),
                 "read",
-                || { engine.execute_plan(&plan, &gid).unwrap(); },
+                || {
+                    engine.execute_plan(&plan, &gid).unwrap();
+                },
                 5,
             ));
         }
@@ -421,16 +426,17 @@ fn run_traversal_benchmarks(results: &mut Vec<BenchResult>) {
         let env = TestEnv::new();
         env.seed_edges_chain(size);
 
-        let program = parser::parse(
-            "MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN a.idx, b.idx"
-        ).unwrap();
+        let program =
+            parser::parse("MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN a.idx, b.idx").unwrap();
         let plan = QueryPlanner::new().plan(&program).unwrap();
         let engine = ExecutionEngine::new(&env.storage);
         let gid = env.graph_id;
         results.push(bench(
             &format!("traverse/1hop_chain_{}", size),
             "traverse",
-            || { engine.execute_plan(&plan, &gid).unwrap(); },
+            || {
+                engine.execute_plan(&plan, &gid).unwrap();
+            },
             5,
         ));
     }
@@ -441,15 +447,18 @@ fn run_traversal_benchmarks(results: &mut Vec<BenchResult>) {
         env.seed_edges_chain(200);
 
         let program = parser::parse(
-            "MATCH (a:Chain)-[:NEXT]->(b:Chain)-[:NEXT]->(c:Chain) RETURN a.idx, c.idx"
-        ).unwrap();
+            "MATCH (a:Chain)-[:NEXT]->(b:Chain)-[:NEXT]->(c:Chain) RETURN a.idx, c.idx",
+        )
+        .unwrap();
         let plan = QueryPlanner::new().plan(&program).unwrap();
         let engine = ExecutionEngine::new(&env.storage);
         let gid = env.graph_id;
         results.push(bench(
             "traverse/2hop_chain_200",
             "traverse",
-            || { engine.execute_plan(&plan, &gid).unwrap(); },
+            || {
+                engine.execute_plan(&plan, &gid).unwrap();
+            },
             5,
         ));
     }
@@ -459,16 +468,18 @@ fn run_traversal_benchmarks(results: &mut Vec<BenchResult>) {
         let env = TestEnv::new();
         env.seed_star(20, spokes);
 
-        let program = parser::parse(
-            "MATCH (c:Star {role: 'center'})-[:KNOWS]->(s:Star) RETURN c.idx, s.idx"
-        ).unwrap();
+        let program =
+            parser::parse("MATCH (c:Star {role: 'center'})-[:KNOWS]->(s:Star) RETURN c.idx, s.idx")
+                .unwrap();
         let plan = QueryPlanner::new().plan(&program).unwrap();
         let engine = ExecutionEngine::new(&env.storage);
         let gid = env.graph_id;
         results.push(bench(
             &format!("traverse/star_20x{}", spokes),
             "traverse",
-            || { engine.execute_plan(&plan, &gid).unwrap(); },
+            || {
+                engine.execute_plan(&plan, &gid).unwrap();
+            },
             5,
         ));
     }
@@ -481,32 +492,34 @@ fn run_aggregation_benchmarks(results: &mut Vec<BenchResult>) {
 
         // COUNT(*)
         {
-            let program = parser::parse(
-                "MATCH (p:Person) RETURN COUNT(*) AS total"
-            ).unwrap();
+            let program = parser::parse("MATCH (p:Person) RETURN COUNT(*) AS total").unwrap();
             let plan = QueryPlanner::new().plan(&program).unwrap();
             let engine = ExecutionEngine::new(&env.storage);
             let gid = env.graph_id;
             results.push(bench(
                 &format!("agg/count_{}", size),
                 "aggregation",
-                || { engine.execute_plan(&plan, &gid).unwrap(); },
+                || {
+                    engine.execute_plan(&plan, &gid).unwrap();
+                },
                 5,
             ));
         }
 
         // GROUP BY + COUNT + ORDER
         {
-            let program = parser::parse(
-                "MATCH (p:Person) RETURN p.city, COUNT(*) AS cnt ORDER BY cnt DESC"
-            ).unwrap();
+            let program =
+                parser::parse("MATCH (p:Person) RETURN p.city, COUNT(*) AS cnt ORDER BY cnt DESC")
+                    .unwrap();
             let plan = QueryPlanner::new().plan(&program).unwrap();
             let engine = ExecutionEngine::new(&env.storage);
             let gid = env.graph_id;
             results.push(bench(
                 &format!("agg/group_count_{}", size),
                 "aggregation",
-                || { engine.execute_plan(&plan, &gid).unwrap(); },
+                || {
+                    engine.execute_plan(&plan, &gid).unwrap();
+                },
                 5,
             ));
         }
@@ -522,7 +535,9 @@ fn run_aggregation_benchmarks(results: &mut Vec<BenchResult>) {
             results.push(bench(
                 &format!("agg/multi_agg_{}", size),
                 "aggregation",
-                || { engine.execute_plan(&plan, &gid).unwrap(); },
+                || {
+                    engine.execute_plan(&plan, &gid).unwrap();
+                },
                 5,
             ));
         }
@@ -544,23 +559,26 @@ fn run_pipeline_benchmarks(results: &mut Vec<BenchResult>) {
         results.push(bench(
             "pipeline/with_agg_1000",
             "pipeline",
-            || { engine.execute_plan(&plan, &gid).unwrap(); },
+            || {
+                engine.execute_plan(&plan, &gid).unwrap();
+            },
             5,
         ));
     }
 
     // DISTINCT
     {
-        let program = parser::parse(
-            "MATCH (p:Person) RETURN DISTINCT p.city ORDER BY p.city"
-        ).unwrap();
+        let program =
+            parser::parse("MATCH (p:Person) RETURN DISTINCT p.city ORDER BY p.city").unwrap();
         let plan = QueryPlanner::new().plan(&program).unwrap();
         let engine = ExecutionEngine::new(&env.storage);
         let gid = env.graph_id;
         results.push(bench(
             "pipeline/distinct_1000",
             "pipeline",
-            || { engine.execute_plan(&plan, &gid).unwrap(); },
+            || {
+                engine.execute_plan(&plan, &gid).unwrap();
+            },
             5,
         ));
     }
@@ -583,7 +601,9 @@ fn run_pipeline_benchmarks(results: &mut Vec<BenchResult>) {
         results.push(bench(
             "pipeline/full_pipeline_1000",
             "pipeline",
-            || { engine.execute_plan(&plan, &gid).unwrap(); },
+            || {
+                engine.execute_plan(&plan, &gid).unwrap();
+            },
             5,
         ));
     }
@@ -604,23 +624,26 @@ fn run_expression_benchmarks(results: &mut Vec<BenchResult>) {
         results.push(bench(
             "expr/case_1000",
             "expression",
-            || { engine.execute_plan(&plan, &gid).unwrap(); },
+            || {
+                engine.execute_plan(&plan, &gid).unwrap();
+            },
             5,
         ));
     }
 
     // String concatenation
     {
-        let program = parser::parse(
-            "MATCH (p:Person) RETURN p.name || ' from ' || p.city AS info"
-        ).unwrap();
+        let program =
+            parser::parse("MATCH (p:Person) RETURN p.name || ' from ' || p.city AS info").unwrap();
         let plan = QueryPlanner::new().plan(&program).unwrap();
         let engine = ExecutionEngine::new(&env.storage);
         let gid = env.graph_id;
         results.push(bench(
             "expr/concat_1000",
             "expression",
-            || { engine.execute_plan(&plan, &gid).unwrap(); },
+            || {
+                engine.execute_plan(&plan, &gid).unwrap();
+            },
             5,
         ));
     }
@@ -628,31 +651,36 @@ fn run_expression_benchmarks(results: &mut Vec<BenchResult>) {
     // Arithmetic
     {
         let program = parser::parse(
-            "MATCH (p:Person) RETURN p.name, p.age * 12 AS months, (p.age + 10) * 2 AS future"
-        ).unwrap();
+            "MATCH (p:Person) RETURN p.name, p.age * 12 AS months, (p.age + 10) * 2 AS future",
+        )
+        .unwrap();
         let plan = QueryPlanner::new().plan(&program).unwrap();
         let engine = ExecutionEngine::new(&env.storage);
         let gid = env.graph_id;
         results.push(bench(
             "expr/arithmetic_1000",
             "expression",
-            || { engine.execute_plan(&plan, &gid).unwrap(); },
+            || {
+                engine.execute_plan(&plan, &gid).unwrap();
+            },
             5,
         ));
     }
 
     // Type conversion functions
     {
-        let program = parser::parse(
-            "MATCH (p:Person) RETURN TOSTRING(p.age) AS s, TOFLOAT(p.age) AS f"
-        ).unwrap();
+        let program =
+            parser::parse("MATCH (p:Person) RETURN TOSTRING(p.age) AS s, TOFLOAT(p.age) AS f")
+                .unwrap();
         let plan = QueryPlanner::new().plan(&program).unwrap();
         let engine = ExecutionEngine::new(&env.storage);
         let gid = env.graph_id;
         results.push(bench(
             "expr/type_conv_1000",
             "expression",
-            || { engine.execute_plan(&plan, &gid).unwrap(); },
+            || {
+                engine.execute_plan(&plan, &gid).unwrap();
+            },
             5,
         ));
     }
@@ -666,7 +694,7 @@ fn run_index_benchmarks(results: &mut Vec<BenchResult>) {
     use synaptica_storage::index::{IndexDefinition, IndexEntityType, IndexManager};
 
     for &size in &[1_000, 10_000, 50_000] {
-        let label = format!("{}",  size);
+        let label = format!("{}", size);
 
         // --- Full scan (no index) ---
         {
@@ -684,7 +712,9 @@ fn run_index_benchmarks(results: &mut Vec<BenchResult>) {
             results.push(bench(
                 &format!("scan_no_idx/{}", label),
                 "index",
-                || { engine.execute_plan(&plan, &gid).unwrap(); },
+                || {
+                    engine.execute_plan(&plan, &gid).unwrap();
+                },
                 3,
             ));
         }
@@ -707,7 +737,9 @@ fn run_index_benchmarks(results: &mut Vec<BenchResult>) {
             results.push(bench(
                 &format!("scan_with_idx/{}", label),
                 "index",
-                || { engine.execute_plan(&plan, &gid).unwrap(); },
+                || {
+                    engine.execute_plan(&plan, &gid).unwrap();
+                },
                 3,
             ));
         }
@@ -715,9 +747,7 @@ fn run_index_benchmarks(results: &mut Vec<BenchResult>) {
 }
 
 fn print_index_comparison(results: &[BenchResult]) {
-    let idx_results: Vec<&BenchResult> = results.iter()
-        .filter(|r| r.category == "index")
-        .collect();
+    let idx_results: Vec<&BenchResult> = results.iter().filter(|r| r.category == "index").collect();
 
     if idx_results.is_empty() {
         return;
@@ -730,36 +760,48 @@ fn print_index_comparison(results: &[BenchResult]) {
     println!("  Index vs Full-Scan Comparison");
     println!("  {}", bar);
     println!();
-    println!("  {:<30} {:>12} {:>12} {:>12} {:>12}", 
-             "Dataset Size", "Full Scan", "Index Scan", "Speedup", "");
+    println!(
+        "  {:<30} {:>12} {:>12} {:>12} {:>12}",
+        "Dataset Size", "Full Scan", "Index Scan", "Speedup", ""
+    );
     println!("  {}", thin);
 
     // Group by dataset size
-    let sizes: Vec<String> = idx_results.iter()
+    let sizes: Vec<String> = idx_results
+        .iter()
         .filter(|r| r.name.starts_with("scan_no_idx/"))
         .map(|r| r.name.strip_prefix("scan_no_idx/").unwrap().to_string())
         .collect();
 
     for size in &sizes {
-        let no_idx = idx_results.iter()
+        let no_idx = idx_results
+            .iter()
             .find(|r| r.name == format!("scan_no_idx/{}", size))
             .unwrap();
-        let with_idx = idx_results.iter()
+        let with_idx = idx_results
+            .iter()
             .find(|r| r.name == format!("scan_with_idx/{}", size))
             .unwrap();
-        
-        let speedup = no_idx.median_ns as f64 / with_idx.median_ns as f64;
-        let indicator = if speedup > 10.0 { "🚀" }
-            else if speedup > 5.0 { "⚡" }
-            else if speedup > 2.0 { "✓✓" }
-            else { "✓" };
 
-        println!("  {:<30} {:>12} {:>12} {:>11.1}x {}",
-                 format!("{} nodes", size),
-                 format_duration(no_idx.median_ns),
-                 format_duration(with_idx.median_ns),
-                 speedup,
-                 indicator);
+        let speedup = no_idx.median_ns as f64 / with_idx.median_ns as f64;
+        let indicator = if speedup > 10.0 {
+            "🚀"
+        } else if speedup > 5.0 {
+            "⚡"
+        } else if speedup > 2.0 {
+            "✓✓"
+        } else {
+            "✓"
+        };
+
+        println!(
+            "  {:<30} {:>12} {:>12} {:>11.1}x {}",
+            format!("{} nodes", size),
+            format_duration(no_idx.median_ns),
+            format_duration(with_idx.median_ns),
+            speedup,
+            indicator
+        );
     }
 
     println!("  {}", thin);
@@ -778,8 +820,10 @@ fn print_report(report: &Report) {
     println!("  Commit: {}", report.commit);
     println!("  {}", bar);
     println!();
-    println!("  {:<40} {:>10} {:>10} {:>10} {:>10}", 
-             "Benchmark", "Median", "p95", "p99", "ops/sec");
+    println!(
+        "  {:<40} {:>10} {:>10} {:>10} {:>10}",
+        "Benchmark", "Median", "p95", "p99", "ops/sec"
+    );
     println!("  {}", thin);
 
     let mut current_cat = String::new();
@@ -790,12 +834,14 @@ fn print_report(report: &Report) {
             }
             current_cat = r.category.clone();
         }
-        println!("  {:<40} {:>10} {:>10} {:>10} {:>10}",
-                 r.name,
-                 format_duration(r.median_ns),
-                 format_duration(r.p95_ns),
-                 format_duration(r.p99_ns),
-                 format_ops(r.ops_per_sec));
+        println!(
+            "  {:<40} {:>10} {:>10} {:>10} {:>10}",
+            r.name,
+            format_duration(r.median_ns),
+            format_duration(r.p95_ns),
+            format_duration(r.p99_ns),
+            format_ops(r.ops_per_sec)
+        );
     }
     println!("  {}", bar);
     println!();
@@ -811,11 +857,15 @@ fn print_comparison(baseline: &Report, current: &Report) {
     println!("  Current:  {} ({})", current.commit, current.timestamp);
     println!("  {}", bar);
     println!();
-    println!("  {:<40} {:>10} {:>10} {:>10} {:>6}", 
-             "Benchmark", "Before", "After", "Change", "");
+    println!(
+        "  {:<40} {:>10} {:>10} {:>10} {:>6}",
+        "Benchmark", "Before", "After", "Change", ""
+    );
     println!("  {}", thin);
 
-    let baseline_map: BTreeMap<&str, &BenchResult> = baseline.results.iter()
+    let baseline_map: BTreeMap<&str, &BenchResult> = baseline
+        .results
+        .iter()
         .map(|r| (r.name.as_str(), r))
         .collect();
 
@@ -824,7 +874,8 @@ fn print_comparison(baseline: &Report, current: &Report) {
 
     for r in &current.results {
         if let Some(base) = baseline_map.get(r.name.as_str()) {
-            let pct_change = ((r.median_ns as f64 - base.median_ns as f64) / base.median_ns as f64) * 100.0;
+            let pct_change =
+                ((r.median_ns as f64 - base.median_ns as f64) / base.median_ns as f64) * 100.0;
             let indicator = if pct_change < -5.0 {
                 improvements += 1;
                 "  ✓✓"
@@ -841,22 +892,33 @@ fn print_comparison(baseline: &Report, current: &Report) {
                 "  ─"
             };
 
-            println!("  {:<40} {:>10} {:>10} {:>+9.1}% {}",
-                     r.name,
-                     format_duration(base.median_ns),
-                     format_duration(r.median_ns),
-                     pct_change,
-                     indicator);
+            println!(
+                "  {:<40} {:>10} {:>10} {:>+9.1}% {}",
+                r.name,
+                format_duration(base.median_ns),
+                format_duration(r.median_ns),
+                pct_change,
+                indicator
+            );
         } else {
-            println!("  {:<40} {:>10} {:>10} {:>10} {:>6}",
-                     r.name, "N/A", format_duration(r.median_ns), "new", "");
+            println!(
+                "  {:<40} {:>10} {:>10} {:>10} {:>6}",
+                r.name,
+                "N/A",
+                format_duration(r.median_ns),
+                "new",
+                ""
+            );
         }
     }
 
     println!("  {}", thin);
     println!();
     println!("  Legend: ✓✓ >5% faster  ✓ >1% faster  ─ within noise  ⚠ >3% slower  ✗✗ >10% slower");
-    println!("  Summary: {} improvements, {} regressions", improvements, regressions);
+    println!(
+        "  Summary: {} improvements, {} regressions",
+        improvements, regressions
+    );
     println!("  {}", bar);
     println!();
 }
@@ -867,10 +929,12 @@ fn print_comparison(baseline: &Report, current: &Report) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let save_name = args.windows(2)
+    let save_name = args
+        .windows(2)
         .find(|w| w[0] == "--save")
         .map(|w| w[1].clone());
-    let compare_name = args.windows(2)
+    let compare_name = args
+        .windows(2)
         .find(|w| w[0] == "--compare")
         .map(|w| w[1].clone());
 
@@ -965,7 +1029,12 @@ fn main() {
             if let Ok(entries) = fs::read_dir(report_dir()) {
                 for entry in entries.flatten() {
                     if entry.path().extension().map_or(false, |e| e == "json") {
-                        let stem = entry.path().file_stem().unwrap().to_string_lossy().to_string();
+                        let stem = entry
+                            .path()
+                            .file_stem()
+                            .unwrap()
+                            .to_string_lossy()
+                            .to_string();
                         if stem != "latest" {
                             eprintln!("    - {}", stem);
                         }

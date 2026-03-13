@@ -22,11 +22,18 @@ async fn test_01_three_node_elects_one_leader() {
             m.state == ServerState::Leader
         })
         .count();
-    assert_eq!(leader_count, 1, "exactly one node must be leader, found {leader_count}");
+    assert_eq!(
+        leader_count, 1,
+        "exactly one node must be leader, found {leader_count}"
+    );
 
     // The leader must believe it is its own leader
     let lm = cluster.metrics(leader_id);
-    assert_eq!(lm.current_leader, Some(leader_id), "leader must report itself as current_leader");
+    assert_eq!(
+        lm.current_leader,
+        Some(leader_id),
+        "leader must report itself as current_leader"
+    );
 
     cluster.shutdown().await;
 }
@@ -45,7 +52,11 @@ async fn test_02_five_node_leader_and_followers() {
         if id == leader_id {
             assert_eq!(m.state, ServerState::Leader, "node {id} should be Leader");
         } else {
-            assert_eq!(m.state, ServerState::Follower, "node {id} should be Follower");
+            assert_eq!(
+                m.state,
+                ServerState::Follower,
+                "node {id} should be Follower"
+            );
         }
     }
 
@@ -83,8 +94,15 @@ async fn test_03_block_leader_triggers_new_election() {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 
-    assert!(new_leader.is_some(), "a new leader must be elected after blocking old leader {old_leader}");
-    assert_ne!(new_leader.unwrap(), old_leader, "new leader must differ from blocked leader");
+    assert!(
+        new_leader.is_some(),
+        "a new leader must be elected after blocking old leader {old_leader}"
+    );
+    assert_ne!(
+        new_leader.unwrap(),
+        old_leader,
+        "new leader must differ from blocked leader"
+    );
 
     cluster.router.unblock_node(old_leader).await;
     cluster.shutdown().await;
@@ -232,7 +250,10 @@ async fn test_07_leader_steps_down_on_higher_term() {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 
-    assert!(stepped_down, "old leader {old_leader} must step down to Follower after seeing higher term");
+    assert!(
+        stepped_down,
+        "old leader {old_leader} must step down to Follower after seeing higher term"
+    );
 
     cluster.shutdown().await;
 }
@@ -297,7 +318,10 @@ async fn test_09_reelection_after_leader_shutdown() {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 
-    assert!(new_leader.is_some(), "new leader must be elected after shutting down leader {old_leader}");
+    assert!(
+        new_leader.is_some(),
+        "new leader must be elected after shutting down leader {old_leader}"
+    );
     assert_ne!(new_leader.unwrap(), old_leader);
 
     cluster.shutdown().await;
@@ -317,7 +341,11 @@ async fn test_10_three_node_tolerates_one_failure() {
 
     // Cluster should still accept writes (2/3 quorum)
     let resp = cluster.write("INSERT (:Person {name: 'Alice'})").await;
-    assert!(resp.is_ok(), "write must succeed with 2/3 quorum: {:?}", resp.err());
+    assert!(
+        resp.is_ok(),
+        "write must succeed with 2/3 quorum: {:?}",
+        resp.err()
+    );
     let resp = resp.unwrap();
     assert!(resp.success, "write response must indicate success");
 
@@ -342,7 +370,11 @@ async fn test_11_five_node_tolerates_two_failures() {
 
     // Cluster should still accept writes (3/5 quorum)
     let resp = cluster.write("INSERT (:Person {name: 'Bob'})").await;
-    assert!(resp.is_ok(), "write must succeed with 3/5 quorum: {:?}", resp.err());
+    assert!(
+        resp.is_ok(),
+        "write must succeed with 3/5 quorum: {:?}",
+        resp.err()
+    );
     let resp = resp.unwrap();
     assert!(resp.success, "write response must indicate success");
 
@@ -375,11 +407,14 @@ async fn test_12_five_node_loses_quorum_with_three_down() {
     .await;
 
     let write_failed = match result {
-        Err(_) => true,                       // timed out
-        Ok(Err(_)) => true,                   // Raft returned error
-        Ok(Ok(resp)) => !resp.success,        // write rejected
+        Err(_) => true,                // timed out
+        Ok(Err(_)) => true,            // Raft returned error
+        Ok(Ok(resp)) => !resp.success, // write rejected
     };
-    assert!(write_failed, "write must fail when quorum is lost (3 of 5 nodes down)");
+    assert!(
+        write_failed,
+        "write must fail when quorum is lost (3 of 5 nodes down)"
+    );
 
     for f in &to_block {
         cluster.router.unblock_node(*f).await;
@@ -400,8 +435,15 @@ async fn test_13_rapid_leader_changes_keep_data_consistent() {
         // Write data via current leader
         let query = format!("INSERT (:Item {{round: {}}})", round);
         let resp = cluster.write(&query).await;
-        assert!(resp.is_ok(), "write round {round} must succeed: {:?}", resp.err());
-        assert!(resp.unwrap().success, "write round {round} must report success");
+        assert!(
+            resp.is_ok(),
+            "write round {round} must succeed: {:?}",
+            resp.err()
+        );
+        assert!(
+            resp.unwrap().success,
+            "write round {round} must report success"
+        );
         total_inserts += 1;
 
         // Force re-election by blocking current leader
@@ -426,7 +468,10 @@ async fn test_13_rapid_leader_changes_keep_data_consistent() {
             }
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
-        assert!(new_leader.is_some(), "new leader must emerge in round {round}");
+        assert!(
+            new_leader.is_some(),
+            "new leader must emerge in round {round}"
+        );
 
         // Unblock old leader so it can rejoin as follower
         cluster.router.unblock_node(current_leader).await;
@@ -462,18 +507,27 @@ async fn test_14_simultaneous_start_produces_single_leader() {
     let cluster = TestCluster::new(5).await;
 
     let leader = cluster.get_leader();
-    assert!(leader.is_some(), "cluster must elect a single leader from simultaneous start");
+    assert!(
+        leader.is_some(),
+        "cluster must elect a single leader from simultaneous start"
+    );
 
     let leader_count = (1..=5u64)
         .filter(|&id| cluster.metrics(id).state == ServerState::Leader)
         .count();
-    assert_eq!(leader_count, 1, "exactly one leader must exist after simultaneous start");
+    assert_eq!(
+        leader_count, 1,
+        "exactly one leader must exist after simultaneous start"
+    );
 
     // All non-leader nodes must be followers (not candidates stuck mid-election)
     let follower_count = (1..=5u64)
         .filter(|&id| cluster.metrics(id).state == ServerState::Follower)
         .count();
-    assert_eq!(follower_count, 4, "all 4 non-leader nodes must be followers");
+    assert_eq!(
+        follower_count, 4,
+        "all 4 non-leader nodes must be followers"
+    );
 
     cluster.shutdown().await;
 }
@@ -488,7 +542,11 @@ async fn test_15_leader_metrics_report_self() {
     let leader_id = cluster.get_leader().expect("must have leader");
     let m = cluster.metrics(leader_id);
 
-    assert_eq!(m.state, ServerState::Leader, "leader node must report Leader state");
+    assert_eq!(
+        m.state,
+        ServerState::Leader,
+        "leader node must report Leader state"
+    );
     assert_eq!(
         m.current_leader,
         Some(leader_id),

@@ -28,8 +28,12 @@ pub fn evaluate(expr: &Expression, context: &Record) -> Result<Value, ExecError>
             let obj = evaluate(object, context)?;
             match obj {
                 Value::Map(map) => Ok(map.get(property).cloned().unwrap_or(Value::Null)),
-                Value::Node { properties, .. } => Ok(properties.get(property).cloned().unwrap_or(Value::Null)),
-                Value::Edge { properties, .. } => Ok(properties.get(property).cloned().unwrap_or(Value::Null)),
+                Value::Node { properties, .. } => {
+                    Ok(properties.get(property).cloned().unwrap_or(Value::Null))
+                }
+                Value::Edge { properties, .. } => {
+                    Ok(properties.get(property).cloned().unwrap_or(Value::Null))
+                }
                 _ => Ok(Value::Null),
             }
         }
@@ -190,9 +194,7 @@ fn eval_binary_op(lv: &Value, op: &BinaryOp, rv: &Value) -> Result<Value, ExecEr
         BinaryOp::Eq => Ok(Value::Bool(lv == rv)),
         BinaryOp::Neq => Ok(Value::Bool(lv != rv)),
 
-        BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => {
-            eval_comparison(lv, op, rv)
-        }
+        BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => eval_comparison(lv, op, rv),
 
         BinaryOp::Add => eval_arithmetic(lv, rv, |a, b| a + b, |a, b| a + b),
         BinaryOp::Sub => eval_arithmetic(lv, rv, |a, b| a - b, |a, b| a - b),
@@ -319,7 +321,8 @@ fn eval_unary_op(op: &UnaryOp, v: &Value) -> Result<Value, ExecError> {
             ))),
         },
         UnaryOp::Neg => match v {
-            Value::Integer(i) => i.checked_neg()
+            Value::Integer(i) => i
+                .checked_neg()
                 .map(Value::Integer)
                 .ok_or_else(|| ExecError::ExpressionError("integer overflow in negation".into())),
             Value::Float(f) => Ok(Value::Float(-f)),
@@ -351,10 +354,9 @@ fn eval_function(name: &str, args: &[Value]) -> Result<Value, ExecError> {
             match v {
                 Value::Integer(i) => Ok(Value::Integer(*i)),
                 Value::Float(f) => Ok(Value::Integer(*f as i64)),
-                Value::String(s) => s
-                    .parse::<i64>()
-                    .map(Value::Integer)
-                    .map_err(|_| ExecError::TypeError(format!("cannot convert '{}' to integer", s))),
+                Value::String(s) => s.parse::<i64>().map(Value::Integer).map_err(|_| {
+                    ExecError::TypeError(format!("cannot convert '{}' to integer", s))
+                }),
                 Value::Bool(true) => Ok(Value::Integer(1)),
                 Value::Bool(false) => Ok(Value::Integer(0)),
                 Value::Null => Ok(Value::Null),
@@ -400,7 +402,10 @@ fn eval_function(name: &str, args: &[Value]) -> Result<Value, ExecError> {
                     m.keys().map(|k| Value::String(k.clone())).collect(),
                 )),
                 Value::Node { properties, .. } => Ok(Value::List(
-                    properties.keys().map(|k| Value::String(k.clone())).collect(),
+                    properties
+                        .keys()
+                        .map(|k| Value::String(k.clone()))
+                        .collect(),
                 )),
                 Value::Null => Ok(Value::Null),
                 _ => Err(ExecError::TypeError(format!(
@@ -438,8 +443,9 @@ fn eval_function(name: &str, args: &[Value]) -> Result<Value, ExecError> {
             let v = args.first().unwrap_or(&Value::Null);
             match v {
                 Value::String(s) => {
-                    let d = NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                        .map_err(|e| ExecError::TypeError(format!("invalid date '{}': {}", s, e)))?;
+                    let d = NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|e| {
+                        ExecError::TypeError(format!("invalid date '{}': {}", s, e))
+                    })?;
                     Ok(Value::Date(d))
                 }
                 Value::Null => Ok(Value::Null),
@@ -455,7 +461,9 @@ fn eval_function(name: &str, args: &[Value]) -> Result<Value, ExecError> {
                 Value::String(s) => {
                     let t = NaiveTime::parse_from_str(s, "%H:%M:%S")
                         .or_else(|_| NaiveTime::parse_from_str(s, "%H:%M"))
-                        .map_err(|e| ExecError::TypeError(format!("invalid time '{}': {}", s, e)))?;
+                        .map_err(|e| {
+                            ExecError::TypeError(format!("invalid time '{}': {}", s, e))
+                        })?;
                     Ok(Value::Time(t))
                 }
                 Value::Null => Ok(Value::Null),
@@ -472,7 +480,9 @@ fn eval_function(name: &str, args: &[Value]) -> Result<Value, ExecError> {
                     let dt = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
                         .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
                         .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M"))
-                        .map_err(|e| ExecError::TypeError(format!("invalid datetime '{}': {}", s, e)))?;
+                        .map_err(|e| {
+                            ExecError::TypeError(format!("invalid datetime '{}': {}", s, e))
+                        })?;
                     Ok(Value::Timestamp(dt))
                 }
                 Value::Null => Ok(Value::Null),
@@ -486,8 +496,9 @@ fn eval_function(name: &str, args: &[Value]) -> Result<Value, ExecError> {
             let v = args.first().unwrap_or(&Value::Null);
             match v {
                 Value::String(s) => {
-                    let dur = parse_iso_duration(s)
-                        .map_err(|e| ExecError::TypeError(format!("invalid duration '{}': {}", s, e)))?;
+                    let dur = parse_iso_duration(s).map_err(|e| {
+                        ExecError::TypeError(format!("invalid duration '{}': {}", s, e))
+                    })?;
                     Ok(Value::Duration(dur))
                 }
                 Value::Null => Ok(Value::Null),
@@ -524,7 +535,9 @@ fn parse_iso_duration(s: &str) -> Result<synaptica_core::types::Duration, String
         if ch.is_ascii_digit() || ch == '-' {
             num_buf.push(ch);
         } else {
-            let n: i32 = num_buf.parse().map_err(|_| format!("invalid number in duration: {}", num_buf))?;
+            let n: i32 = num_buf
+                .parse()
+                .map_err(|_| format!("invalid number in duration: {}", num_buf))?;
             num_buf.clear();
             match ch {
                 'Y' => months += n * 12,
@@ -545,17 +558,23 @@ fn parse_iso_duration(s: &str) -> Result<synaptica_core::types::Duration, String
             } else {
                 match ch {
                     'H' => {
-                        let n: i64 = num_buf.parse().map_err(|_| format!("invalid hours: {}", num_buf))?;
+                        let n: i64 = num_buf
+                            .parse()
+                            .map_err(|_| format!("invalid hours: {}", num_buf))?;
                         nanos += n * 3_600_000_000_000;
                         num_buf.clear();
                     }
                     'M' => {
-                        let n: i64 = num_buf.parse().map_err(|_| format!("invalid minutes: {}", num_buf))?;
+                        let n: i64 = num_buf
+                            .parse()
+                            .map_err(|_| format!("invalid minutes: {}", num_buf))?;
                         nanos += n * 60_000_000_000;
                         num_buf.clear();
                     }
                     'S' => {
-                        let n: f64 = num_buf.parse().map_err(|_| format!("invalid seconds: {}", num_buf))?;
+                        let n: f64 = num_buf
+                            .parse()
+                            .map_err(|_| format!("invalid seconds: {}", num_buf))?;
                         nanos += (n * 1_000_000_000.0) as i64;
                         num_buf.clear();
                     }
@@ -656,14 +675,15 @@ mod tests {
             Literal::Integer(2),
         ]));
         let result = evaluate(&expr, &empty_record()).unwrap();
-        assert_eq!(result, Value::List(vec![Value::Integer(1), Value::Integer(2)]));
+        assert_eq!(
+            result,
+            Value::List(vec![Value::Integer(1), Value::Integer(2)])
+        );
     }
 
     #[test]
     fn test_literal_map() {
-        let expr = Expression::Literal(Literal::Map(vec![
-            ("a".to_string(), Literal::Integer(1)),
-        ]));
+        let expr = Expression::Literal(Literal::Map(vec![("a".to_string(), Literal::Integer(1))]));
         let result = evaluate(&expr, &empty_record()).unwrap();
         let mut expected = BTreeMap::new();
         expected.insert("a".to_string(), Value::Integer(1));
@@ -701,7 +721,10 @@ mod tests {
     #[test]
     fn test_mul_integers() {
         let expr = binop(int_lit(6), BinaryOp::Mul, int_lit(7));
-        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Integer(42));
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::Integer(42)
+        );
     }
 
     #[test]
@@ -755,7 +778,10 @@ mod tests {
         let expr = binop(int_lit(5), BinaryOp::Le, int_lit(5));
         assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
         let expr2 = binop(int_lit(4), BinaryOp::Le, int_lit(5));
-        assert_eq!(evaluate(&expr2, &empty_record()).unwrap(), Value::Bool(true));
+        assert_eq!(
+            evaluate(&expr2, &empty_record()).unwrap(),
+            Value::Bool(true)
+        );
     }
 
     #[test]
@@ -763,7 +789,10 @@ mod tests {
         let expr = binop(int_lit(5), BinaryOp::Ge, int_lit(5));
         assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(true));
         let expr2 = binop(int_lit(6), BinaryOp::Ge, int_lit(5));
-        assert_eq!(evaluate(&expr2, &empty_record()).unwrap(), Value::Bool(true));
+        assert_eq!(
+            evaluate(&expr2, &empty_record()).unwrap(),
+            Value::Bool(true)
+        );
     }
 
     #[test]
@@ -791,7 +820,10 @@ mod tests {
     #[test]
     fn test_and_true_false() {
         let expr = binop(bool_lit(true), BinaryOp::And, bool_lit(false));
-        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::Bool(false)
+        );
     }
 
     #[test]
@@ -809,7 +841,10 @@ mod tests {
     #[test]
     fn test_not_true() {
         let expr = unaryop(UnaryOp::Not, bool_lit(true));
-        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::Bool(false)
+        );
     }
 
     #[test]
@@ -823,7 +858,10 @@ mod tests {
         // false AND (unknown_identifier) should short-circuit to false
         let error_expr = Expression::Identifier("nonexistent".to_string());
         let expr = binop(bool_lit(false), BinaryOp::And, error_expr);
-        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::Bool(false)
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -846,7 +884,11 @@ mod tests {
         let expr = binop(left, BinaryOp::Concat, right);
         assert_eq!(
             evaluate(&expr, &empty_record()).unwrap(),
-            Value::List(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)])
+            Value::List(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3)
+            ])
         );
     }
 
@@ -863,7 +905,10 @@ mod tests {
     #[test]
     fn test_is_null_on_value() {
         let expr = Expression::IsNull(Box::new(int_lit(5)));
-        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::Bool(false)
+        );
     }
 
     #[test]
@@ -875,7 +920,10 @@ mod tests {
     #[test]
     fn test_is_not_null_on_null() {
         let expr = Expression::IsNotNull(Box::new(null_lit()));
-        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::Bool(false)
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -885,13 +933,19 @@ mod tests {
     #[test]
     fn test_neg_integer() {
         let expr = unaryop(UnaryOp::Neg, int_lit(5));
-        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Integer(-5));
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::Integer(-5)
+        );
     }
 
     #[test]
     fn test_neg_float() {
         let expr = unaryop(UnaryOp::Neg, float_lit(3.14));
-        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Float(-3.14));
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::Float(-3.14)
+        );
     }
 
     #[test]
@@ -919,7 +973,10 @@ mod tests {
             operand: Box::new(int_lit(4)),
             list: Box::new(Expression::List(vec![int_lit(1), int_lit(2), int_lit(3)])),
         };
-        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::Bool(false)
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -945,13 +1002,19 @@ mod tests {
     #[test]
     fn test_fn_tointeger_string() {
         let expr = fn_call("toInteger", vec![str_lit("42")]);
-        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Integer(42));
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::Integer(42)
+        );
     }
 
     #[test]
     fn test_fn_tofloat_integer() {
         let expr = fn_call("toFloat", vec![int_lit(42)]);
-        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Float(42.0));
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::Float(42.0)
+        );
     }
 
     #[test]
@@ -1130,7 +1193,10 @@ mod tests {
     #[test]
     fn test_null_and_false_is_false() {
         let expr = binop(null_lit(), BinaryOp::And, bool_lit(false));
-        assert_eq!(evaluate(&expr, &empty_record()).unwrap(), Value::Bool(false));
+        assert_eq!(
+            evaluate(&expr, &empty_record()).unwrap(),
+            Value::Bool(false)
+        );
     }
 
     #[test]
