@@ -1,15 +1,75 @@
 use crate::expression::evaluate;
-use crate::operators::ExecutionContext;
 use crate::result::{Record, ResultSet};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt;
 use synaptica_core::graph::{Edge, EdgeId, GraphId, GraphMeta, Label, Node, NodeId};
 use synaptica_core::types::Value;
-use synaptica_gql::ast::{BinaryOp, Direction, Expression, Literal, SortDirection};
-use synaptica_gql::planner::LogicalPlan;
+use synaptica_gql::ast::{BinaryOp, Direction, Expression, GqlProgram, SortDirection};
+use synaptica_gql::planner::{LogicalPlan, QueryPlanner};
 use synaptica_storage::engine::StorageEngine;
 use synaptica_storage::index::{IndexDefinition, IndexEntityType};
 use uuid::Uuid;
+
+/// Shared execution context passed through the plan tree.
+pub struct ExecutionContext<'a> {
+    pub storage: &'a StorageEngine,
+    pub graph_id: GraphId,
+    /// Accepted by the shared entry point. Read by later phases (parameters,
+    /// graph types, explicit transactions).
+    #[allow(dead_code)]
+    pub options: ExecOptions,
+}
+
+/// Options for one execution of a parsed program.
+///
+/// `parameters`, `graph_type`, and `transaction_id` are part of the pipeline
+/// contract. Later phases consume them; an empty value preserves today's behavior.
+#[derive(Debug, Clone, Default)]
+pub struct ExecOptions {
+    pub parameters: HashMap<String, Value>,
+    pub graph_type: Option<String>,
+    pub transaction_id: Option<String>,
+}
+
+/// Failure from [`execute_program`], split so callers can keep plan and
+/// execution errors distinct.
+#[derive(Debug)]
+pub enum ProgramError {
+    Plan(String),
+    Execution(String),
+}
+
+impl fmt::Display for ProgramError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProgramError::Plan(msg) => write!(f, "{msg}"),
+            ProgramError::Execution(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl std::error::Error for ProgramError {}
+
+/// Plan and execute a parsed GQL program against `storage`.
+///
+/// The gRPC service, the import path, the MCP local backend, and the Raft
+/// applier all call this so a write applied on the leader matches a write
+/// applied on a follower.
+pub fn execute_program(
+    storage: &StorageEngine,
+    graph_id: &GraphId,
+    program: &GqlProgram,
+    options: &ExecOptions,
+) -> Result<ResultSet, ProgramError> {
+    let planner = QueryPlanner::new();
+    let plan = planner
+        .plan(program)
+        .map_err(|e| ProgramError::Plan(e.to_string()))?;
+    ExecutionEngine::new(storage)
+        .execute_plan_with(&plan, graph_id, options)
+        .map_err(|e| ProgramError::Execution(e.to_string()))
+}
 
 // ---------------------------------------------------------------------------
 // Error
@@ -62,9 +122,19 @@ impl<'a> ExecutionEngine<'a> {
         plan: &LogicalPlan,
         graph_id: &GraphId,
     ) -> Result<ResultSet, ExecError> {
+        self.execute_plan_with(plan, graph_id, &ExecOptions::default())
+    }
+
+    pub fn execute_plan_with(
+        &self,
+        plan: &LogicalPlan,
+        graph_id: &GraphId,
+        options: &ExecOptions,
+    ) -> Result<ResultSet, ExecError> {
         let ctx = ExecutionContext {
             storage: self.storage,
             graph_id: *graph_id,
+            options: options.clone(),
         };
         let optimized = self.optimize(plan, &ctx);
         self.execute_node(&optimized, &ctx)

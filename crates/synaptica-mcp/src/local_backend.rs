@@ -5,9 +5,8 @@ use async_trait::async_trait;
 
 use synaptica_core::graph::{GraphId, GraphMeta};
 use synaptica_core::types::Value;
-use synaptica_exec::engine::ExecutionEngine;
+use synaptica_exec::engine::{execute_program, ExecOptions, ProgramError};
 use synaptica_gql::parser;
-use synaptica_gql::planner::QueryPlanner;
 use synaptica_storage::backup::BackupManager;
 use synaptica_storage::engine::{StorageConfig, StorageEngine};
 
@@ -115,15 +114,16 @@ impl SynapticaBackend for LocalBackend {
         let program =
             parser::parse(query).map_err(|e| anyhow::anyhow!("Parse error: {}", e.message))?;
 
-        let planner = QueryPlanner;
-        let plan = planner
-            .plan(&program)
-            .map_err(|e| anyhow::anyhow!("Plan error: {}", e))?;
-
-        let engine = ExecutionEngine::new(&self.storage);
-        let result_set = engine
-            .execute_plan(&plan, &graph_id)
-            .map_err(|e| anyhow::anyhow!("Execution error: {}", e))?;
+        let result_set = execute_program(
+            &self.storage,
+            &graph_id,
+            &program,
+            &ExecOptions::default(),
+        )
+        .map_err(|e| match e {
+            ProgramError::Plan(msg) => anyhow::anyhow!("Plan error: {}", msg),
+            ProgramError::Execution(msg) => anyhow::anyhow!("Execution error: {}", msg),
+        })?;
 
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
 

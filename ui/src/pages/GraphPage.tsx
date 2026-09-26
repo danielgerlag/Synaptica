@@ -16,27 +16,39 @@ export function GraphPage() {
   const [selectedEdge, setSelectedEdge] = useState<GraphEdge | undefined>()
   const [visibleLabels, setVisibleLabels] = useState<Set<string>>(new Set())
   const [layoutKey, setLayoutKey] = useState(0)
+  const [rowLimit, setRowLimit] = useState(200)
+  const [truncated, setTruncated] = useState(false)
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
     setError(undefined)
-    client.executeQuery('MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 200', currentGraph)
-      .then((res) => {
-        if (res.error) { setError(res.error); return }
+    const nodeQuery = `MATCH (n) RETURN n LIMIT ${rowLimit}`
+    const edgeQuery = `MATCH (n)-[r]->(m) RETURN n, r, m LIMIT ${rowLimit}`
+    Promise.all([
+      client.executeQuery(nodeQuery, currentGraph),
+      client.executeQuery(edgeQuery, currentGraph),
+    ])
+      .then(([nodesRes, edgesRes]) => {
+        if (cancelled) return
+        if (nodesRes.error) { setError(nodesRes.error); return }
+        if (edgesRes.error) { setError(edgesRes.error); return }
+
         const nodeMap = new Map<string, GraphNode>()
         const edgeMap = new Map<string, GraphEdge>()
 
-        for (const row of res.rows) {
-          const n = row['n'] as GqlNode | null
-          const r = row['r'] as GqlEdge | null
-          const m = row['m'] as GqlNode | null
-
-          if (n && typeof n === 'object' && 'id' in n) {
+        const takeNode = (value: unknown) => {
+          if (value && typeof value === 'object' && 'id' in value) {
+            const n = value as GqlNode
             nodeMap.set(n.id, { id: n.id, labels: n.labels ?? [], properties: n.properties ?? {} })
           }
-          if (m && typeof m === 'object' && 'id' in m) {
-            nodeMap.set(m.id, { id: m.id, labels: m.labels ?? [], properties: m.properties ?? {} })
-          }
+        }
+
+        for (const row of nodesRes.rows) takeNode(row['n'])
+        for (const row of edgesRes.rows) {
+          takeNode(row['n'])
+          takeNode(row['m'])
+          const r = row['r'] as GqlEdge | null
           if (r && typeof r === 'object' && 'id' in r) {
             edgeMap.set(r.id, {
               id: r.id, label: r.label ?? '',
@@ -51,14 +63,20 @@ export function GraphPage() {
           edges: Array.from(edgeMap.values()),
         }
         setGraphData(data)
+        setTruncated(nodesRes.rows.length >= rowLimit || edgesRes.rows.length >= rowLimit)
 
         const labels = new Set<string>()
         data.nodes.forEach((n) => n.labels.forEach((l) => labels.add(l)))
         setVisibleLabels(labels)
       })
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load graph'))
-      .finally(() => setLoading(false))
-  }, [currentGraph])
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load graph')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [currentGraph, rowLimit])
 
   const allLabels = useMemo(() => {
     const s = new Set<string>()
@@ -67,7 +85,9 @@ export function GraphPage() {
   }, [graphData])
 
   const filteredData = useMemo<GraphData>(() => {
-    const nodes = graphData.nodes.filter((n) => n.labels.some((l) => visibleLabels.has(l)))
+    const nodes = graphData.nodes.filter(
+      (n) => n.labels.length === 0 || n.labels.some((l) => visibleLabels.has(l)),
+    )
     const nodeIds = new Set(nodes.map((n) => n.id))
     const edges = graphData.edges.filter((e) => {
       const sid = typeof e.source === 'string' ? e.source : e.source.id
@@ -137,6 +157,11 @@ export function GraphPage() {
 
   return (
     <div className="flex h-full flex-col gap-2">
+      {truncated && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+          Showing the first {rowLimit} nodes and the first {rowLimit} edges. Raise the limit to load more.
+        </div>
+      )}
       <GraphControls
         labels={allLabels}
         visibleLabels={visibleLabels}
@@ -145,6 +170,9 @@ export function GraphPage() {
         onResetLayout={handleResetLayout}
         nodeCount={filteredData.nodes.length}
         edgeCount={filteredData.edges.length}
+        rowLimit={rowLimit}
+        onRowLimitChange={setRowLimit}
+        truncated={truncated}
       />
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border">
         <GraphCanvas

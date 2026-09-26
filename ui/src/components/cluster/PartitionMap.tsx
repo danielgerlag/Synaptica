@@ -6,6 +6,8 @@ export interface PartitionInfo {
   rangeEnd: string
   leader: string
   replicas: string[]
+  /** When set, the row is a single replication group rather than a key range. */
+  summary?: string
 }
 
 interface PartitionMapProps {
@@ -32,18 +34,19 @@ export function PartitionMap({ partitions }: PartitionMapProps) {
       {/* Horizontal bar */}
       <div className="flex h-10 w-full overflow-hidden rounded-md border border-border">
         {partitions.map((p) => {
+          const ranged = p.rangeStart.startsWith('0x') && p.rangeEnd.startsWith('0x')
           const start = parseInt(p.rangeStart, 16)
           const end = parseInt(p.rangeEnd, 16)
-          const width = ((end - start) / totalRange) * 100
+          const width = ranged ? ((end - start) / totalRange) * 100 : 100
 
           return (
             <div
               key={p.id}
               className={cn('flex items-center justify-center text-xs font-medium text-white', colorForNode(p.leader))}
               style={{ width: `${width}%` }}
-              title={`${p.id}: [${p.rangeStart}, ${p.rangeEnd}) → ${p.leader}`}
+              title={p.summary ?? `${p.id}: [${p.rangeStart}, ${p.rangeEnd}) → ${p.leader}`}
             >
-              {p.id}
+              {p.summary ?? p.id}
             </div>
           )
         })}
@@ -68,7 +71,7 @@ export function PartitionMap({ partitions }: PartitionMapProps) {
                   {p.id}
                 </td>
                 <td className="px-4 py-2 font-mono text-muted-foreground">
-                  [{p.rangeStart}, {p.rangeEnd})
+                  {p.summary ?? `[${p.rangeStart}, ${p.rangeEnd})`}
                 </td>
                 <td className="px-4 py-2">{p.leader}</td>
                 <td className="px-4 py-2 text-muted-foreground">

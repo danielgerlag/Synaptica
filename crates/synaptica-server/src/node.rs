@@ -11,6 +11,10 @@ use synaptica_storage::engine::{StorageConfig, StorageEngine};
 
 use crate::config::ServerConfig;
 
+/// A follower is healthy when its matched log index is within this many
+/// entries of the leader's last log index.
+pub const REPLICATION_LAG_HEALTHY: u64 = 64;
+
 pub struct NodeRuntime {
     pub storage: Arc<StorageEngine>,
     pub default_graph_id: GraphId,
@@ -22,6 +26,71 @@ pub struct NodeRuntime {
     pub node_id: Option<NodeId>,
     /// Cluster listen address for inter-node gRPC.
     pub cluster_addr: Option<String>,
+    /// Node id → cluster gRPC address, including this node.
+    pub peer_addrs: BTreeMap<NodeId, String>,
+    pub started_at: std::time::Instant,
+}
+
+/// Address for `node_id`, preferring the Raft membership map and falling
+/// back to the addresses supplied at startup.
+pub fn resolve_node_addr(
+    node_id: u64,
+    membership_addrs: &BTreeMap<u64, String>,
+    configured_addrs: &BTreeMap<u64, String>,
+) -> String {
+    membership_addrs
+        .get(&node_id)
+        .cloned()
+        .filter(|addr| !addr.is_empty())
+        .or_else(|| configured_addrs.get(&node_id).cloned())
+        .unwrap_or_default()
+}
+
+/// Leader address, if both the leader id and an address for it are known.
+pub fn resolve_leader_addr(
+    leader_id: Option<u64>,
+    membership_addrs: &BTreeMap<u64, String>,
+    configured_addrs: &BTreeMap<u64, String>,
+) -> Option<String> {
+    let id = leader_id?;
+    let addr = resolve_node_addr(id, membership_addrs, configured_addrs);
+    if addr.is_empty() {
+        None
+    } else {
+        Some(addr)
+    }
+}
+
+/// Whether a member should be reported healthy.
+///
+/// The leader is healthy. This node is healthy when its Raft runtime is
+/// running. Other members are healthy only when this node is the leader and
+/// their matched index is within [`REPLICATION_LAG_HEALTHY`] of `last_log_index`.
+/// `replication` is `None` when this node is not the leader. A missing matched
+/// index means the follower has not reported yet.
+pub fn member_is_healthy(
+    node_id: u64,
+    self_id: u64,
+    leader_id: Option<u64>,
+    self_running: bool,
+    last_log_index: Option<u64>,
+    replication: Option<&BTreeMap<u64, Option<u64>>>,
+) -> bool {
+    if leader_id == Some(node_id) {
+        return true;
+    }
+    if node_id == self_id {
+        return self_running;
+    }
+    let Some(repl) = replication else {
+        return false;
+    };
+    match repl.get(&node_id).copied() {
+        Some(Some(matched)) => {
+            last_log_index.unwrap_or(0).saturating_sub(matched) <= REPLICATION_LAG_HEALTHY
+        }
+        _ => false,
+    }
 }
 
 impl NodeRuntime {
@@ -50,6 +119,8 @@ impl NodeRuntime {
             applier: None,
             node_id: None,
             cluster_addr: None,
+            peer_addrs: BTreeMap::new(),
+            started_at: std::time::Instant::now(),
         })
     }
 
@@ -63,6 +134,12 @@ impl NodeRuntime {
     ) -> anyhow::Result<()> {
         self.node_id = Some(node_id);
         self.cluster_addr = Some(cluster_addr.clone());
+        let mut addrs = BTreeMap::new();
+        addrs.insert(node_id, cluster_addr.clone());
+        for (id, addr) in &peers {
+            addrs.insert(*id, addr.clone());
+        }
+        self.peer_addrs = addrs;
 
         // Create the applier that executes committed mutations
         let applier = Arc::new(StateMachineApplier::new(self.storage.clone()));
@@ -130,16 +207,92 @@ impl NodeRuntime {
         }
     }
 
-    /// Returns the leader's node address, if known.
+    /// Returns the leader's cluster address, if this node knows it.
     pub fn leader_addr(&self) -> Option<String> {
         let raft = self.raft.as_ref()?;
         let metrics = raft.metrics().borrow().clone();
-        let _leader_id = metrics.current_leader?;
-        // TODO: look up leader address in membership config
-        None
+        let mut membership_addrs = BTreeMap::new();
+        for (id, node) in metrics.membership_config.membership().nodes() {
+            membership_addrs.insert(*id, node.addr.clone());
+        }
+        resolve_leader_addr(
+            metrics.current_leader,
+            &membership_addrs,
+            &self.peer_addrs,
+        )
     }
 
     pub fn shutdown(&self) {
         tracing::info!("node shutting down");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addrs(pairs: &[(u64, &str)]) -> BTreeMap<u64, String> {
+        pairs
+            .iter()
+            .map(|(id, addr)| (*id, (*addr).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn leader_addr_prefers_membership_over_startup_config() {
+        let membership = addrs(&[(1, "10.0.0.1:9191"), (2, "10.0.0.2:9191")]);
+        let configured = addrs(&[(1, "127.0.0.1:9191"), (2, "127.0.0.1:9192")]);
+        assert_eq!(
+            resolve_leader_addr(Some(2), &membership, &configured).as_deref(),
+            Some("10.0.0.2:9191")
+        );
+    }
+
+    #[test]
+    fn leader_addr_falls_back_to_configured_peers() {
+        let membership = BTreeMap::new();
+        let configured = addrs(&[(1, "127.0.0.1:9191"), (2, "127.0.0.1:9192")]);
+        assert_eq!(
+            resolve_leader_addr(Some(2), &membership, &configured).as_deref(),
+            Some("127.0.0.1:9192")
+        );
+    }
+
+    #[test]
+    fn leader_addr_is_none_when_unknown() {
+        let empty = BTreeMap::new();
+        assert_eq!(resolve_leader_addr(Some(9), &empty, &empty), None);
+        assert_eq!(resolve_leader_addr(None, &empty, &empty), None);
+    }
+
+    #[test]
+    fn follower_health_uses_replication_lag() {
+        let mut repl = BTreeMap::new();
+        repl.insert(2, Some(100));
+        repl.insert(3, Some(10));
+        repl.insert(4, None);
+
+        assert!(member_is_healthy(1, 1, Some(1), true, Some(120), Some(&repl)));
+        assert!(member_is_healthy(2, 1, Some(1), true, Some(120), Some(&repl)));
+        assert!(!member_is_healthy(
+            3,
+            1,
+            Some(1),
+            true,
+            Some(120),
+            Some(&repl)
+        ));
+        assert!(!member_is_healthy(
+            4,
+            1,
+            Some(1),
+            true,
+            Some(120),
+            Some(&repl)
+        ));
+        // A follower does not have a replication map, so it cannot confirm peers.
+        assert!(!member_is_healthy(2, 3, Some(1), true, Some(120), None));
+        assert!(member_is_healthy(3, 3, Some(1), true, Some(120), None));
+        assert!(!member_is_healthy(3, 3, Some(1), false, Some(120), None));
     }
 }

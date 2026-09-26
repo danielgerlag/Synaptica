@@ -2356,6 +2356,7 @@ dependencies = [
  "synaptica-gql",
  "synaptica-storage",
  "synaptica-tx",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",

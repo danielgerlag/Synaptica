@@ -94,15 +94,12 @@ impl ClusterService for ClusterServiceImpl {
             graph_name: req.graph_name,
         };
 
-        match self.raft.client_write(raft_req.clone()).await {
-            Ok(_resp) => {
-                let result = self.applier.apply(&raft_req);
-                Ok(Response::new(ForwardWriteResponse {
-                    success: result.success,
-                    error: result.error,
-                    rows_affected: result.rows_affected,
-                }))
-            }
+        match self.raft.client_write(raft_req).await {
+            Ok(resp) => Ok(Response::new(ForwardWriteResponse {
+                success: resp.data.success,
+                error: resp.data.error,
+                rows_affected: resp.data.rows_affected,
+            })),
             Err(e) => Ok(Response::new(ForwardWriteResponse {
                 success: false,
                 error: Some(format!("raft write: {}", e)),

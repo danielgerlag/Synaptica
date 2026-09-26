@@ -134,6 +134,9 @@ async fn main() -> anyhow::Result<()> {
         raft: node.raft.clone(),
         applier: node.applier.clone(),
         node_id: node.node_id,
+        cluster_addr: node.cluster_addr.clone(),
+        peer_addrs: node.peer_addrs.clone(),
+        started_at: node.started_at,
     };
 
     let addr = config.listen_addr.parse()?;

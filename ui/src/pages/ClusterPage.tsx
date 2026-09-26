@@ -37,17 +37,21 @@ export function ClusterPage() {
   const clusterNodes = (clusterData?.nodes ?? []).map((n) => ({
     id: n.id,
     address: n.address,
-    role: (n.role === 'Leader' ? 'Leader' : 'Follower') as 'Leader' | 'Follower',
+    role: (n.role.toLowerCase() === 'leader' ? 'Leader' : 'Follower') as 'Leader' | 'Follower',
     isHealthy: n.isHealthy,
   }))
 
-  const partitions = Array.from({ length: clusterData?.partitionCount ?? 1 }, (_, i) => ({
-    id: `p${i}`,
-    rangeStart: `0x${(Math.floor((i / (clusterData?.partitionCount ?? 1)) * 256)).toString(16).padStart(2, '0')}`,
-    rangeEnd: `0x${(Math.floor(((i + 1) / (clusterData?.partitionCount ?? 1)) * 256) - 1).toString(16).padStart(2, '0')}`,
-    leader: clusterData?.leaderId ?? clusterData?.nodeId ?? 'local',
-    replicas: clusterData?.nodes.filter((n) => n.id !== clusterData?.leaderId).map((n) => n.id) ?? [],
-  }))
+  const leaderId = clusterData?.leaderId || clusterData?.nodeId || 'local'
+  const partitions = [
+    {
+      id: 'group-1',
+      rangeStart: '',
+      rangeEnd: '',
+      leader: leaderId,
+      replicas: (clusterData?.nodes ?? []).filter((n) => n.id !== leaderId).map((n) => n.id),
+      summary: 'One Raft group, whole graph',
+    },
+  ]
 
   return (
     <div className="flex h-full flex-col gap-4">

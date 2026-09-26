@@ -462,7 +462,7 @@ The current cluster implementation has the following known limitations:
 
 | Area | Status | Detail |
 |---|---|---|
-| Write forwarding | Partial | `ForwardWrite` RPC exists but is not used automatically by the client service. Clients must send writes to the leader or handle the error and retry. |
+| Write forwarding | Implemented | A follower that receives a write calls `ForwardWrite` on the current leader. The write still fails when the leader address cannot be resolved. |
 | Range partitioning | Scaffolded | Partition and routing structures are defined but all data is currently stored in a single Raft group. Horizontal sharding is not yet functional. |
 | Snapshots | Placeholder | Snapshot metadata is tracked but full graph state snapshot/restore is a stub. Catch-up is done entirely via log replay. |
 | Transactions | Not implemented | `BeginTransaction`, `CommitTransaction`, `RollbackTransaction` RPCs are defined but not functional. |
@@ -475,9 +475,9 @@ The current cluster implementation has the following known limitations:
 
 ### Writes fail with "raft error" on a follower
 
-**Cause:** You're sending writes to a follower node. Only the leader can accept writes.
+**Cause:** The node is not the leader, and it could not resolve the leader's cluster address to forward the write.
 
-**Fix:** Connect your client to the leader node. Use `ClusterStatus` to find the current leader, or implement retry logic in your client.
+**Fix:** Check `ClusterStatus` for the current leader and a non-empty node address. Peer addresses come from the Raft membership and from the `--peer` / `cluster.peers` list used at startup.
 
 ### Node won't join the cluster
 

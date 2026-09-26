@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use synaptica_core::graph::GraphId;
-use synaptica_exec::engine::ExecutionEngine;
+use synaptica_exec::engine::{execute_program, ExecOptions, ProgramError};
 use synaptica_gql::parser;
-use synaptica_gql::planner::QueryPlanner;
 use synaptica_storage::engine::StorageEngine;
 
 use crate::raft::{RaftRequest, RaftResponse};
@@ -46,28 +45,18 @@ impl StateMachineApplier {
             }
         };
 
-        // Plan
-        let planner = QueryPlanner::new();
-        let plan = match planner.plan(&program) {
-            Ok(p) => p,
-            Err(e) => {
-                return RaftResponse {
-                    success: false,
-                    error: Some(format!("plan error: {}", e)),
-                    rows_affected: 0,
-                };
-            }
-        };
-
-        // Execute
-        let engine = ExecutionEngine::new(&self.storage);
-        match engine.execute_plan(&plan, &graph_id) {
+        match execute_program(&self.storage, &graph_id, &program, &ExecOptions::default()) {
             Ok(result_set) => RaftResponse {
                 success: true,
                 error: None,
                 rows_affected: result_set.records.len() as i64,
             },
-            Err(e) => RaftResponse {
+            Err(ProgramError::Plan(e)) => RaftResponse {
+                success: false,
+                error: Some(format!("plan error: {}", e)),
+                rows_affected: 0,
+            },
+            Err(ProgramError::Execution(e)) => RaftResponse {
                 success: false,
                 error: Some(format!("execution error: {}", e)),
                 rows_affected: 0,
@@ -115,5 +104,46 @@ mod tests {
         let resp = applier.apply(&req);
         assert!(!resp.success);
         assert!(resp.error.is_some());
+    }
+
+    #[test]
+    fn test_applier_matches_local_execute() {
+        let query = "INSERT (:Person {name: 'Alice', age: 30})";
+        let graph_name = "test";
+
+        let dir_a = tempfile::tempdir().unwrap();
+        let storage_a =
+            Arc::new(StorageEngine::open(dir_a.path(), &StorageConfig::default()).unwrap());
+        let dir_b = tempfile::tempdir().unwrap();
+        let storage_b =
+            Arc::new(StorageEngine::open(dir_b.path(), &StorageConfig::default()).unwrap());
+
+        let graph_id = GraphId::from_name(graph_name);
+        for storage in [&storage_a, &storage_b] {
+            storage
+                .put_graph_meta(&synaptica_core::graph::GraphMeta {
+                    id: graph_id,
+                    name: graph_name.to_string(),
+                    graph_type: None,
+                })
+                .unwrap();
+        }
+
+        let applier = StateMachineApplier::new(storage_a.clone());
+        let resp = applier.apply(&RaftRequest::WriteQuery {
+            query: query.to_string(),
+            graph_name: graph_name.to_string(),
+        });
+        assert!(resp.success, "applier error: {:?}", resp.error);
+
+        let program = parser::parse(query).unwrap();
+        execute_program(&storage_b, &graph_id, &program, &ExecOptions::default()).unwrap();
+
+        let applied = storage_a.scan_nodes(&graph_id).unwrap();
+        let local = storage_b.scan_nodes(&graph_id).unwrap();
+        assert_eq!(applied.len(), 1, "raft apply must insert one node");
+        assert_eq!(local.len(), 1, "local execute must insert one node");
+        assert_eq!(applied[0].labels, local[0].labels);
+        assert_eq!(applied[0].properties, local[0].properties);
     }
 }
