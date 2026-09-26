@@ -12,7 +12,7 @@ use synaptica_cluster::raft::{NodeId, RaftRequest, SynapticaRaft};
 use synaptica_cluster::state_machine::StateMachineApplier;
 use synaptica_core::graph::GraphId;
 use synaptica_core::types::Value;
-use synaptica_exec::engine::{execute_program, ExecOptions, ProgramError};
+use synaptica_exec::engine::{execute_program, ExecOptions, ExecStats, ProgramError};
 use synaptica_gql::parser;
 use synaptica_storage::backup::BackupManager;
 use synaptica_storage::engine::{StorageEngine, StorageError};
@@ -450,6 +450,7 @@ impl SynapticaService for SynapticaServiceImpl {
         &self,
         _request: Request<GetMetricsRequest>,
     ) -> Result<Response<GetMetricsResponse>, Status> {
+        crate::metrics::refresh_storage_gauges(&self.storage);
         let metric_families = REGISTRY.gather();
         let mut gauges: HashMap<String, f64> = HashMap::new();
         let mut counters: HashMap<String, i64> = HashMap::new();
@@ -687,13 +688,13 @@ impl SynapticaServiceImpl {
         graph_id: &GraphId,
         start: std::time::Instant,
     ) -> QueryResponse {
-        let result_set = match execute_program(
+        let output = match execute_program(
             &self.storage,
             graph_id,
             program,
             &ExecOptions::default(),
         ) {
-            Ok(rs) => rs,
+            Ok(output) => output,
             Err(ProgramError::Plan(e)) => {
                 observe_query_error(graph_name, start);
                 return query_error(format!("plan error: {}", e));
@@ -703,6 +704,7 @@ impl SynapticaServiceImpl {
                 return query_error(format!("execution error: {}", e));
             }
         };
+        let result_set = output.result;
 
         let elapsed = start.elapsed();
         QUERY_DURATION
@@ -731,15 +733,7 @@ impl SynapticaServiceImpl {
         QueryResponse {
             columns,
             rows,
-            stats: Some(QueryStats {
-                nodes_created: 0,
-                nodes_deleted: 0,
-                edges_created: 0,
-                edges_deleted: 0,
-                properties_set: 0,
-                rows_returned,
-                execution_time_ms: elapsed_ms,
-            }),
+            stats: Some(query_stats(rows_returned, elapsed_ms, &output.stats)),
             error: None,
         }
     }
@@ -761,7 +755,7 @@ impl SynapticaServiceImpl {
         };
 
         match raft.client_write(raft_req).await {
-            Ok(raft_resp) => raft_result_response(graph_name, start, raft_resp.data),
+            Ok(raft_resp) => raft_result_response(graph_name, start, &raft_resp.data),
             Err(e) => {
                 if let Some(target) = self.forward_target(&e) {
                     if let Some(addr) = target {
@@ -855,14 +849,14 @@ impl SynapticaServiceImpl {
                 if inner.success {
                     QUERIES_TOTAL.with_label_values(&["success"]).inc();
                     QueryResponse {
-                        columns: vec!["result".to_string()],
+                        columns: vec![],
                         rows: vec![],
                         stats: Some(QueryStats {
-                            nodes_created: 0,
-                            nodes_deleted: 0,
-                            edges_created: 0,
-                            edges_deleted: 0,
-                            properties_set: 0,
+                            nodes_created: inner.nodes_created,
+                            nodes_deleted: inner.nodes_deleted,
+                            edges_created: inner.edges_created,
+                            edges_deleted: inner.edges_deleted,
+                            properties_set: inner.properties_set,
                             rows_returned: inner.rows_affected,
                             execution_time_ms: std::cmp::max(1, elapsed.as_millis() as i64),
                         }),
@@ -897,10 +891,22 @@ fn query_error(message: String) -> QueryResponse {
     }
 }
 
+fn query_stats(rows_returned: i64, elapsed_ms: i64, stats: &ExecStats) -> QueryStats {
+    QueryStats {
+        nodes_created: stats.nodes_created,
+        nodes_deleted: stats.nodes_deleted,
+        edges_created: stats.edges_created,
+        edges_deleted: stats.edges_deleted,
+        properties_set: stats.properties_set,
+        rows_returned,
+        execution_time_ms: elapsed_ms,
+    }
+}
+
 fn raft_result_response(
     graph_name: &str,
     start: std::time::Instant,
-    result: synaptica_cluster::raft::RaftResponse,
+    result: &synaptica_cluster::raft::RaftResponse,
 ) -> QueryResponse {
     let elapsed = start.elapsed();
     QUERY_DURATION
@@ -909,14 +915,14 @@ fn raft_result_response(
     if result.success {
         QUERIES_TOTAL.with_label_values(&["success"]).inc();
         QueryResponse {
-            columns: vec!["result".to_string()],
+            columns: vec![],
             rows: vec![],
             stats: Some(QueryStats {
-                nodes_created: 0,
-                nodes_deleted: 0,
-                edges_created: 0,
-                edges_deleted: 0,
-                properties_set: 0,
+                nodes_created: result.nodes_created,
+                nodes_deleted: result.nodes_deleted,
+                edges_created: result.edges_created,
+                edges_deleted: result.edges_deleted,
+                properties_set: result.properties_set,
                 rows_returned: result.rows_affected,
                 execution_time_ms: std::cmp::max(1, elapsed.as_millis() as i64),
             }),
@@ -924,7 +930,12 @@ fn raft_result_response(
         }
     } else {
         QUERIES_TOTAL.with_label_values(&["error"]).inc();
-        query_error(result.error.unwrap_or_else(|| "raft write failed".into()))
+        query_error(
+            result
+                .error
+                .clone()
+                .unwrap_or_else(|| "raft write failed".into()),
+        )
     }
 }
 
@@ -1143,6 +1154,34 @@ mod tests {
         let streamed_rows: usize = chunks.iter().map(|c| c.rows.len()).sum();
         assert_eq!(unary.rows.len(), streamed_rows);
         assert_eq!(streamed_rows, 1);
+    }
+
+    #[tokio::test]
+    async fn insert_reports_node_and_edge_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(dir.path());
+        let alice = svc
+            .dispatch_query(read_request("INSERT (:Person {name: 'Alice', age: 30})"))
+            .await;
+        assert!(alice.error.is_none(), "{:?}", alice.error);
+        let alice_stats = alice.stats.unwrap();
+        assert_eq!(alice_stats.nodes_created, 1);
+        assert_eq!(alice_stats.edges_created, 0);
+
+        let bob = svc
+            .dispatch_query(read_request("INSERT (:Person {name: 'Bob', age: 25})"))
+            .await;
+        assert!(bob.error.is_none(), "{:?}", bob.error);
+
+        let edge = svc
+            .dispatch_query(read_request(
+                "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) INSERT (a)-[:KNOWS {since: 2020}]->(b)",
+            ))
+            .await;
+        assert!(edge.error.is_none(), "{:?}", edge.error);
+        let edge_stats = edge.stats.unwrap();
+        assert_eq!(edge_stats.edges_created, 1);
+        assert_eq!(edge_stats.nodes_created, 0);
     }
 
     #[tokio::test]

@@ -73,19 +73,21 @@ async fn main() -> anyhow::Result<()> {
         .add_directive(format!("synaptica={}", config.log_level).parse()?);
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    // Register and optionally start Prometheus metrics endpoint
+    // Register Prometheus metrics. The scrape server starts after storage opens.
     metrics::register_metrics();
+
+    let node = NodeRuntime::start(&config)?;
+
     if config.metrics_enabled {
         let metrics_addr = config.metrics_addr.clone();
+        let metrics_storage = node.storage.clone();
         tokio::spawn(async move {
-            if let Err(e) = serve_metrics(&metrics_addr).await {
+            if let Err(e) = serve_metrics(&metrics_addr, metrics_storage).await {
                 tracing::error!(error = %e, "metrics server failed");
             }
         });
         tracing::info!(addr = %config.metrics_addr, "metrics endpoint started");
     }
-
-    let node = NodeRuntime::start(&config)?;
 
     // Cluster mode: initialize Raft if config or CLI flags provide cluster settings
     let mut node = node;
@@ -319,7 +321,10 @@ fn guess_content_type(path: &std::path::Path) -> &'static str {
         _ => "application/octet-stream",
     }
 }
-async fn serve_metrics(addr: &str) -> anyhow::Result<()> {
+async fn serve_metrics(
+    addr: &str,
+    storage: Arc<synaptica_storage::engine::StorageEngine>,
+) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let semaphore = Arc::new(Semaphore::new(100));
     loop {
@@ -328,10 +333,12 @@ async fn serve_metrics(addr: &str) -> anyhow::Result<()> {
             Ok(p) => p,
             Err(_) => continue,
         };
+        let storage = storage.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let mut buf = [0u8; 1024];
             let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+            metrics::refresh_storage_gauges(&storage);
             let body = metrics::metrics_handler().await;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",

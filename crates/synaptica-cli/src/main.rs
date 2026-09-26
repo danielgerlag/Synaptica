@@ -92,52 +92,100 @@ fn format_gql_value(val: &GqlValue) -> String {
     }
 }
 
+/// Columns the engine uses internally. They stay available to a following
+/// clause, and they stay out of the default table.
+fn visible_column_indexes(columns: &[String]) -> Vec<usize> {
+    columns
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| !name.starts_with("__"))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+fn format_table_cell(val: &GqlValue) -> String {
+    match &val.kind {
+        Some(proto::gql_value::Kind::StringValue(s)) => s.clone(),
+        _ => format_gql_value(val),
+    }
+}
+
 fn print_table(columns: &[String], rows: &[proto::Row]) {
-    if columns.is_empty() {
+    let indexes = visible_column_indexes(columns);
+    if indexes.is_empty() {
         return;
     }
-
-    // Compute column widths
-    let mut widths: Vec<usize> = columns.iter().map(|c| c.len()).collect();
+    let headers: Vec<String> = indexes.iter().map(|&i| columns[i].clone()).collect();
     let formatted_rows: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
-            row.values
+            indexes
                 .iter()
-                .enumerate()
-                .map(|(i, v)| {
-                    let s = format_gql_value(v);
-                    if i < widths.len() && s.len() > widths[i] {
-                        widths[i] = s.len();
-                    }
-                    s
+                .map(|&i| {
+                    row.values
+                        .get(i)
+                        .map(format_table_cell)
+                        .unwrap_or_else(|| "NULL".to_string())
                 })
                 .collect()
         })
         .collect();
+    print_box_table(&headers, &formatted_rows);
+}
 
-    // Header
-    let header: Vec<String> = columns
-        .iter()
-        .enumerate()
-        .map(|(i, c)| format!("{:width$}", c, width = widths[i]))
-        .collect();
-    let separator: Vec<String> = widths.iter().map(|&w| "-".repeat(w)).collect();
-
-    println!(" {} ", header.join(" | "));
-    println!("-{}-", separator.join("-+-"));
-
-    // Rows
-    for row in &formatted_rows {
-        let cells: Vec<String> = row
+fn print_box_table(columns: &[String], rows: &[Vec<String>]) {
+    if columns.is_empty() {
+        return;
+    }
+    let mut widths: Vec<usize> = columns.iter().map(|c| c.len()).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < widths.len() && cell.len() > widths[i] {
+                widths[i] = cell.len();
+            }
+        }
+    }
+    let rule = format!(
+        "+{}+",
+        widths
+            .iter()
+            .map(|w| "-".repeat(w + 2))
+            .collect::<Vec<_>>()
+            .join("+")
+    );
+    let render = |cells: &[String]| {
+        let body = cells
             .iter()
             .enumerate()
-            .map(|(i, v)| {
-                let w = widths.get(i).copied().unwrap_or(0);
-                format!("{:width$}", v, width = w)
-            })
-            .collect();
-        println!(" {} ", cells.join(" | "));
+            .map(|(i, cell)| format!(" {:<width$} ", cell, width = widths[i]))
+            .collect::<Vec<_>>()
+            .join("|");
+        format!("|{body}|")
+    };
+    println!("{rule}");
+    println!("{}", render(columns));
+    println!("{rule}");
+    for row in rows {
+        println!("{}", render(row));
+    }
+    println!("{rule}");
+}
+
+fn print_mutation_lines(stats: &proto::QueryStats) {
+    if stats.nodes_created > 0 {
+        println!("Nodes created: {}", stats.nodes_created);
+    }
+    if stats.nodes_deleted > 0 {
+        println!("Nodes deleted: {}", stats.nodes_deleted);
+    }
+    if stats.edges_created > 0 {
+        println!("Edges created: {}", stats.edges_created);
+    }
+    if stats.edges_deleted > 0 {
+        println!("Edges deleted: {}", stats.edges_deleted);
+    }
+    if stats.properties_set > 0 {
+        println!("Properties set: {}", stats.properties_set);
     }
 }
 
@@ -206,7 +254,11 @@ async fn main() -> Result<()> {
     let mut client = SynapticaServiceClient::connect(cli.host.clone()).await?;
     println!("Connected. Using graph: {}", cli.graph);
 
-    let prompt = format!("synaptica({})> ", cli.graph);
+    let prompt = if cli.graph == "default" {
+        "synaptica> ".to_string()
+    } else {
+        format!("synaptica({})> ", cli.graph)
+    };
 
     let mut rl = DefaultEditor::new()?;
     let hist = history_path();
@@ -437,16 +489,23 @@ async fn main() -> Result<()> {
                                 } else {
                                     match cli.format {
                                         OutputFormat::Table => {
-                                            print_table(&resp.columns, &resp.rows)
+                                            if let Some(stats) = &resp.stats {
+                                                print_mutation_lines(stats);
+                                            }
+                                            let visible = visible_column_indexes(&resp.columns);
+                                            if !visible.is_empty() {
+                                                print_table(&resp.columns, &resp.rows);
+                                                if let Some(stats) = &resp.stats {
+                                                    println!(
+                                                        "{} row(s) returned in {}ms",
+                                                        stats.rows_returned,
+                                                        stats.execution_time_ms
+                                                    );
+                                                }
+                                            }
                                         }
                                         OutputFormat::Json => print_json(&resp.columns, &resp.rows),
                                         OutputFormat::Csv => print_csv(&resp.columns, &resp.rows),
-                                    }
-                                    if let Some(stats) = &resp.stats {
-                                        println!(
-                                            "\n{} rows returned in {}ms",
-                                            stats.rows_returned, stats.execution_time_ms
-                                        );
                                     }
                                 }
                             }
@@ -474,4 +533,32 @@ async fn main() -> Result<()> {
 
     let _ = rl.save_history(&hist);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visible_columns_hide_internal_names() {
+        let columns = vec![
+            "a.name".to_string(),
+            "__node_id".to_string(),
+            "b.name".to_string(),
+            "__labels".to_string(),
+            "r.since".to_string(),
+        ];
+        let indexes = visible_column_indexes(&columns);
+        let visible: Vec<_> = indexes.iter().map(|&i| columns[i].as_str()).collect();
+        assert_eq!(visible, vec!["a.name", "b.name", "r.since"]);
+    }
+
+    #[test]
+    fn table_cells_do_not_quote_strings() {
+        let value = GqlValue {
+            kind: Some(proto::gql_value::Kind::StringValue("Alice".to_string())),
+        };
+        assert_eq!(format_table_cell(&value), "Alice");
+        assert_eq!(format_gql_value(&value), "\"Alice\"");
+    }
 }

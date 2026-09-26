@@ -57,33 +57,35 @@ A high-performance distributed graph database written in Rust, implementing the 
 ### Build
 
 ```bash
-cargo build --release
+cargo build --release -p synaptica-server -p synaptica-cli
 ```
 
 ### Run the Server
 
+Port 9090 is the gRPC API. Port 9091 serves Prometheus metrics. The default data directory is `./data` (created on first start and reused after that). The startup log prints the path as `data_dir=...`.
+
 ```bash
 # With default configuration
-cargo run --release --bin synaptica-server
+cargo run --release -p synaptica-server
 
 # With custom config
-cargo run --release --bin synaptica-server -- --config synaptica.toml
+cargo run --release -p synaptica-server -- --config synaptica.toml
 
 # With CLI options
-cargo run --release --bin synaptica-server -- --listen 0.0.0.0:9090 --data-dir ./mydata
+cargo run --release -p synaptica-server -- --listen 0.0.0.0:9090 --data-dir ./mydata
 ```
 
 ### Connect with CLI
 
 ```bash
 # Connect to local server
-cargo run --release --bin synaptica-cli
+cargo run --release -p synaptica-cli
 
 # Connect to remote server
-cargo run --release --bin synaptica-cli -- --host http://remote-host:9090
+cargo run --release -p synaptica-cli -- --host http://remote-host:9090
 
 # Output in JSON format
-cargo run --release --bin synaptica-cli -- --format json
+cargo run --release -p synaptica-cli -- --format json
 ```
 
 ### Example Session
@@ -96,26 +98,47 @@ synaptica> INSERT (:Person {name: 'Bob', age: 25})
 Nodes created: 1
 
 synaptica> MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) \
-         > INSERT (a)-[:KNOWS {since: 2020}]->(b)
+       ...> INSERT (a)-[:KNOWS {since: 2020}]->(b)
 Edges created: 1
 
 synaptica> MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, b.name, r.since
-+---------+---------+---------+
-| a.name  | b.name  | r.since |
-+---------+---------+---------+
-| Alice   | Bob     | 2020    |
-+---------+---------+---------+
-1 row(s) returned
++--------+--------+---------+
+| a.name | b.name | r.since |
++--------+--------+---------+
+| Alice  | Bob    | 2020    |
++--------+--------+---------+
+1 row(s) returned in 1ms
 
 synaptica> MATCH (n:Person) WHERE n.age > 20 RETURN n.name, n.age ORDER BY n.age DESC
-+---------+-------+
-| n.name  | n.age |
-+---------+-------+
-| Alice   | 30    |
-| Bob     | 25    |
-+---------+-------+
-2 row(s) returned
++--------+-------+
+| n.name | n.age |
++--------+-------+
+| Alice  | 30    |
+| Bob    | 25    |
++--------+-------+
+2 row(s) returned in 1ms
 ```
+
+### Web UI
+
+The page is not served from the gRPC port. In a second terminal, with the server already running:
+
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`. The dev server proxies API calls to `http://localhost:9090`.
+
+To serve a production build from the database process instead:
+
+```bash
+cd ui && npm run build
+cargo run --release -p synaptica-server -- --ui-dir ui/dist --ui-addr 0.0.0.0:8080
+```
+
+Then open `http://localhost:8080`.
 
 ## Configuration
 
@@ -239,7 +262,7 @@ DROP GRAPH IF EXISTS myGraph
 
 ```bash
 # Connect to a specific graph
-synaptica-cli --addr http://127.0.0.1:50051 --graph myGraph
+cargo run --release -p synaptica-cli -- --host http://127.0.0.1:9090 --graph myGraph
 
 # List graphs from the REPL
 :graphs

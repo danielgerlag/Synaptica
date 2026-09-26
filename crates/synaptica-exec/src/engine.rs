@@ -1,5 +1,6 @@
 use crate::expression::evaluate;
 use crate::result::{Record, ResultSet};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
@@ -51,6 +52,22 @@ impl fmt::Display for ProgramError {
 
 impl std::error::Error for ProgramError {}
 
+/// Mutation counts for one program execution.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExecStats {
+    pub nodes_created: i64,
+    pub nodes_deleted: i64,
+    pub edges_created: i64,
+    pub edges_deleted: i64,
+    pub properties_set: i64,
+}
+
+/// Rows plus the mutation counts produced while computing them.
+pub struct ProgramOutput {
+    pub result: ResultSet,
+    pub stats: ExecStats,
+}
+
 /// Plan and execute a parsed GQL program against `storage`.
 ///
 /// The gRPC service, the import path, the MCP local backend, and the Raft
@@ -61,14 +78,17 @@ pub fn execute_program(
     graph_id: &GraphId,
     program: &GqlProgram,
     options: &ExecOptions,
-) -> Result<ResultSet, ProgramError> {
+) -> Result<ProgramOutput, ProgramError> {
     let planner = QueryPlanner::new();
     let plan = planner
         .plan(program)
         .map_err(|e| ProgramError::Plan(e.to_string()))?;
-    ExecutionEngine::new(storage)
+    let engine = ExecutionEngine::new(storage);
+    let result = engine
         .execute_plan_with(&plan, graph_id, options)
-        .map_err(|e| ProgramError::Execution(e.to_string()))
+        .map_err(|e| ProgramError::Execution(e.to_string()))?;
+    let stats = *engine.stats.borrow();
+    Ok(ProgramOutput { result, stats })
 }
 
 // ---------------------------------------------------------------------------
@@ -110,11 +130,24 @@ impl From<synaptica_storage::engine::StorageError> for ExecError {
 
 pub struct ExecutionEngine<'a> {
     storage: &'a StorageEngine,
+    stats: RefCell<ExecStats>,
 }
 
 impl<'a> ExecutionEngine<'a> {
     pub fn new(storage: &'a StorageEngine) -> Self {
-        Self { storage }
+        Self {
+            storage,
+            stats: RefCell::new(ExecStats::default()),
+        }
+    }
+
+    fn add_stats(&self, nodes_created: i64, nodes_deleted: i64, edges_created: i64, edges_deleted: i64, properties_set: i64) {
+        let mut stats = self.stats.borrow_mut();
+        stats.nodes_created += nodes_created;
+        stats.nodes_deleted += nodes_deleted;
+        stats.edges_created += edges_created;
+        stats.edges_deleted += edges_deleted;
+        stats.properties_set += properties_set;
     }
 
     pub fn execute_plan(
@@ -131,6 +164,7 @@ impl<'a> ExecutionEngine<'a> {
         graph_id: &GraphId,
         options: &ExecOptions,
     ) -> Result<ResultSet, ExecError> {
+        *self.stats.borrow_mut() = ExecStats::default();
         let ctx = ExecutionContext {
             storage: self.storage,
             graph_id: *graph_id,
@@ -929,6 +963,7 @@ impl<'a> ExecutionEngine<'a> {
             node.set_property(key.clone(), val);
         }
         ctx.storage.put_node(&node)?;
+        self.add_stats(1, 0, 0, 0, 0);
 
         // Maintain indexes
         self.index_node_on_write(&node, ctx);
@@ -1092,6 +1127,7 @@ impl<'a> ExecutionEngine<'a> {
                 edge.set_property(key.clone(), val);
             }
             ctx.storage.put_edge(&edge)?;
+            self.add_stats(0, 0, 1, 0, 0);
             rs.add_record(vec![Value::String(edge.id.to_string())]);
         }
         Ok(rs)
@@ -1132,6 +1168,7 @@ impl<'a> ExecutionEngine<'a> {
                         ctx.storage
                             .delete_edge(&ctx.graph_id, &eid)
                             .map_err(|e| ExecError::Internal(e.to_string()))?;
+                        self.add_stats(0, 0, 0, 1, 0);
                         deleted += 1;
                     }
                 }
@@ -1156,9 +1193,11 @@ impl<'a> ExecutionEngine<'a> {
                         if let Ok(node) = ctx.storage.get_node(&ctx.graph_id, &nid) {
                             self.unindex_node_on_delete(&node, ctx);
                         }
+                        let incident = self.count_incident_edges(ctx, &nid)?;
                         ctx.storage
                             .delete_node(&ctx.graph_id, &nid)
                             .map_err(|e| ExecError::Internal(e.to_string()))?;
+                        self.add_stats(0, 1, 0, incident, 0);
                         deleted += 1;
                     }
                 }
@@ -1168,6 +1207,23 @@ impl<'a> ExecutionEngine<'a> {
         let mut result = ResultSet::new(vec!["deleted".to_string()]);
         result.add_record(vec![Value::Integer(deleted as i64)]);
         Ok(result)
+    }
+
+    fn count_incident_edges(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        node_id: &NodeId,
+    ) -> Result<i64, ExecError> {
+        let mut ids = std::collections::HashSet::new();
+        for edge in ctx
+            .storage
+            .get_outgoing_edges(&ctx.graph_id, node_id, None)?
+            .into_iter()
+            .chain(ctx.storage.get_incoming_edges(&ctx.graph_id, node_id, None)?)
+        {
+            ids.insert(edge.id);
+        }
+        Ok(ids.len() as i64)
     }
 
     // -- SetProperty ---------------------------------------------------------
@@ -1203,6 +1259,7 @@ impl<'a> ExecutionEngine<'a> {
                                 .map_err(|e| ExecError::Internal(e.to_string()))?;
                             self.index_node_on_write(&node, ctx);
                             modified += 1;
+                            self.add_stats(0, 0, 0, 0, 1);
                         }
                         Value::Edge { ref id, .. } => {
                             let eid = EdgeId(Uuid::parse_str(id).map_err(|e| {
@@ -1217,6 +1274,7 @@ impl<'a> ExecutionEngine<'a> {
                                 .put_edge(&edge)
                                 .map_err(|e| ExecError::Internal(e.to_string()))?;
                             modified += 1;
+                            self.add_stats(0, 0, 0, 0, 1);
                         }
                         _ => {}
                     }
@@ -1239,6 +1297,7 @@ impl<'a> ExecutionEngine<'a> {
                                 .map_err(|e| ExecError::Internal(e.to_string()))?;
                             self.index_node_on_write(&node, ctx);
                             modified += 1;
+                            self.add_stats(0, 0, 0, 0, 1);
                         }
                         Value::Edge { ref id, .. } => {
                             let eid = EdgeId(Uuid::parse_str(id).map_err(|e| {
@@ -1253,6 +1312,7 @@ impl<'a> ExecutionEngine<'a> {
                                 .put_edge(&edge)
                                 .map_err(|e| ExecError::Internal(e.to_string()))?;
                             modified += 1;
+                            self.add_stats(0, 0, 0, 0, 1);
                         }
                         _ => {}
                     }

@@ -20,11 +20,21 @@ pub enum RaftRequest {
 }
 
 /// Response returned after a Raft entry is applied to the state machine.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct RaftResponse {
     pub success: bool,
     pub error: Option<String>,
     pub rows_affected: i64,
+    #[serde(default)]
+    pub nodes_created: i64,
+    #[serde(default)]
+    pub nodes_deleted: i64,
+    #[serde(default)]
+    pub edges_created: i64,
+    #[serde(default)]
+    pub edges_deleted: i64,
+    #[serde(default)]
+    pub properties_set: i64,
 }
 
 #[cfg(test)]
@@ -53,10 +63,13 @@ mod tests {
             success: true,
             error: None,
             rows_affected: 5,
+            nodes_created: 1,
+            ..RaftResponse::default()
         };
         let bytes = bincode::serialize(&resp).unwrap();
         let deserialized: RaftResponse = bincode::deserialize(&bytes).unwrap();
         assert!(deserialized.success);
         assert_eq!(deserialized.rows_affected, 5);
+        assert_eq!(deserialized.nodes_created, 1);
     }
 }

@@ -114,7 +114,7 @@ impl SynapticaBackend for LocalBackend {
         let program =
             parser::parse(query).map_err(|e| anyhow::anyhow!("Parse error: {}", e.message))?;
 
-        let result_set = execute_program(
+        let output = execute_program(
             &self.storage,
             &graph_id,
             &program,
@@ -126,6 +126,7 @@ impl SynapticaBackend for LocalBackend {
         })?;
 
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+        let result_set = output.result;
 
         let rows: Vec<Vec<serde_json::Value>> = result_set
             .records
@@ -139,11 +140,11 @@ impl SynapticaBackend for LocalBackend {
             stats: QueryStats {
                 rows_returned: rows.len() as u64,
                 execution_time_ms: elapsed,
-                nodes_created: 0,
-                edges_created: 0,
-                nodes_deleted: 0,
-                edges_deleted: 0,
-                properties_set: 0,
+                nodes_created: output.stats.nodes_created as u64,
+                edges_created: output.stats.edges_created as u64,
+                nodes_deleted: output.stats.nodes_deleted as u64,
+                edges_deleted: output.stats.edges_deleted as u64,
+                properties_set: output.stats.properties_set as u64,
             },
             error: None,
         })

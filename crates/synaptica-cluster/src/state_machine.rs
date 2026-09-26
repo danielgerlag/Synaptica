@@ -37,31 +37,32 @@ impl StateMachineApplier {
         let program = match parser::parse(query) {
             Ok(p) => p,
             Err(e) => {
-                return RaftResponse {
-                    success: false,
-                    error: Some(format!("parse error: {}", e)),
-                    rows_affected: 0,
-                };
+                return raft_failure(format!("parse error: {}", e));
             }
         };
 
         match execute_program(&self.storage, &graph_id, &program, &ExecOptions::default()) {
-            Ok(result_set) => RaftResponse {
+            Ok(output) => RaftResponse {
                 success: true,
                 error: None,
-                rows_affected: result_set.records.len() as i64,
+                rows_affected: output.result.records.len() as i64,
+                nodes_created: output.stats.nodes_created,
+                nodes_deleted: output.stats.nodes_deleted,
+                edges_created: output.stats.edges_created,
+                edges_deleted: output.stats.edges_deleted,
+                properties_set: output.stats.properties_set,
             },
-            Err(ProgramError::Plan(e)) => RaftResponse {
-                success: false,
-                error: Some(format!("plan error: {}", e)),
-                rows_affected: 0,
-            },
-            Err(ProgramError::Execution(e)) => RaftResponse {
-                success: false,
-                error: Some(format!("execution error: {}", e)),
-                rows_affected: 0,
-            },
+            Err(ProgramError::Plan(e)) => raft_failure(format!("plan error: {}", e)),
+            Err(ProgramError::Execution(e)) => raft_failure(format!("execution error: {}", e)),
         }
+    }
+}
+
+fn raft_failure(message: String) -> RaftResponse {
+    RaftResponse {
+        success: false,
+        error: Some(message),
+        ..RaftResponse::default()
     }
 }
 

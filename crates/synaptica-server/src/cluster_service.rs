@@ -99,11 +99,21 @@ impl ClusterService for ClusterServiceImpl {
                 success: resp.data.success,
                 error: resp.data.error,
                 rows_affected: resp.data.rows_affected,
+                nodes_created: resp.data.nodes_created,
+                nodes_deleted: resp.data.nodes_deleted,
+                edges_created: resp.data.edges_created,
+                edges_deleted: resp.data.edges_deleted,
+                properties_set: resp.data.properties_set,
             })),
             Err(e) => Ok(Response::new(ForwardWriteResponse {
                 success: false,
                 error: Some(format!("raft write: {}", e)),
                 rows_affected: 0,
+                nodes_created: 0,
+                nodes_deleted: 0,
+                edges_created: 0,
+                edges_deleted: 0,
+                properties_set: 0,
             })),
         }
     }

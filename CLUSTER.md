@@ -50,14 +50,14 @@ Open three terminals:
 
 ```bash
 # Terminal 1 — Node 1 (will bootstrap as leader)
-cargo run --release --bin synaptica-server -- \
+cargo run --release -p synaptica-server -- \
   --node-id 1 \
   --listen    127.0.0.1:9090 \
   --cluster-addr 127.0.0.1:9191 \
   --data-dir ./data/node1
 
 # Terminal 2 — Node 2
-cargo run --release --bin synaptica-server -- \
+cargo run --release -p synaptica-server -- \
   --node-id 2 \
   --listen    127.0.0.1:9091 \
   --cluster-addr 127.0.0.1:9192 \
@@ -65,7 +65,7 @@ cargo run --release --bin synaptica-server -- \
   --peer 1=127.0.0.1:9191
 
 # Terminal 3 — Node 3
-cargo run --release --bin synaptica-server -- \
+cargo run --release -p synaptica-server -- \
   --node-id 3 \
   --listen    127.0.0.1:9093 \
   --cluster-addr 127.0.0.1:9193 \
@@ -123,9 +123,9 @@ address = "127.0.0.1:9192"
 Start each node with `--config`:
 
 ```bash
-cargo run --release --bin synaptica-server -- --config node1.toml
-cargo run --release --bin synaptica-server -- --config node2.toml
-cargo run --release --bin synaptica-server -- --config node3.toml
+cargo run --release -p synaptica-server -- --config node1.toml
+cargo run --release -p synaptica-server -- --config node2.toml
+cargo run --release -p synaptica-server -- --config node3.toml
 ```
 
 ### Verify the cluster
@@ -133,7 +133,7 @@ cargo run --release --bin synaptica-server -- --config node3.toml
 Connect the CLI to any node and run a write:
 
 ```bash
-cargo run --release --bin synaptica-cli -- --host http://127.0.0.1:9090
+cargo run --release -p synaptica-cli -- --host http://127.0.0.1:9090
 
 synaptica> INSERT (:Person {name: 'Alice', age: 30})
 Nodes created: 1
@@ -142,7 +142,7 @@ Nodes created: 1
 Then read from a different node:
 
 ```bash
-cargo run --release --bin synaptica-cli -- --host http://127.0.0.1:9091
+cargo run --release -p synaptica-cli -- --host http://127.0.0.1:9091
 
 synaptica> MATCH (n:Person) RETURN n.name, n.age
 +---------+-------+

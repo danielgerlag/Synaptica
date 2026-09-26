@@ -37,6 +37,11 @@ message ForwardWriteResponse {
   bool success = 1;
   optional string error = 2;
   int64 rows_affected = 3;
+  int64 nodes_created = 4;
+  int64 nodes_deleted = 5;
+  int64 edges_created = 6;
+  int64 edges_deleted = 7;
+  int64 properties_set = 8;
 }
 
 // Add a learner (non-voting replica) to the cluster.

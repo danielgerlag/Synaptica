@@ -325,8 +325,7 @@ impl RaftStorage<TypeConfig> for Arc<RocksLogStore> {
                 openraft::EntryPayload::Blank => {
                     responses.push(RaftResponse {
                         success: true,
-                        error: None,
-                        rows_affected: 0,
+                        ..RaftResponse::default()
                     });
                 }
                 openraft::EntryPayload::Membership(mem) => {
@@ -337,8 +336,7 @@ impl RaftStorage<TypeConfig> for Arc<RocksLogStore> {
                         .map_err(|e| StorageIOError::write(&e))?;
                     responses.push(RaftResponse {
                         success: true,
-                        error: None,
-                        rows_affected: 0,
+                        ..RaftResponse::default()
                     });
                 }
                 openraft::EntryPayload::Normal(ref req) => {
@@ -347,8 +345,7 @@ impl RaftStorage<TypeConfig> for Arc<RocksLogStore> {
                     } else {
                         RaftResponse {
                             success: true,
-                            error: None,
-                            rows_affected: 0,
+                            ..RaftResponse::default()
                         }
                     };
                     responses.push(response);
